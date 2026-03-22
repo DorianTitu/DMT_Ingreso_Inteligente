@@ -1,2 +1,4 @@
 /snapshots_camaras
 /.venv
+app.db
+*.db

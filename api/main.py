@@ -3,12 +3,17 @@ API FastAPI para captura de cámaras ONVIF-Dahua
 Endpoints para capturar imágenes de las 3 cámaras
 """
 
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import JSONResponse
+from fastapi import FastAPI, HTTPException, Depends
+from fastapi.responses import JSONResponse, FileResponse
+from fastapi.staticfiles import StaticFiles
 import os
 import base64
+from sqlalchemy.orm import Session
 
 from camera_capture import capture_camera1, capture_camera3, capture_camera250
+from database import init_db, get_db, Persona, Captura
+from ocr_processor import ocr_processor
+from file_manager import organizar_imagenes, limpiar_archivos_temporales
 
 # Crear aplicación FastAPI
 app = FastAPI(
@@ -28,7 +33,8 @@ def image_to_base64(file_path: str) -> str:
 
 @app.on_event("startup")
 async def startup_event():
-    """Crear directorio de salida al iniciar"""
+    """Inicializar BD y crear directorios"""
+    init_db()
     os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 @app.get("/")
@@ -39,6 +45,7 @@ async def root():
         "version": "1.0.0",
         "descripcion": "API para capturar imágenes de cámaras Dahua ONVIF",
         "endpoints": {
+            "/capture/integrada": "Capturar 3 imágenes, extraer OCR y guardar en BD",
             "/capture/camara_placa_entrada_vehicular": "Capturar imagen de Camera1",
             "/capture/camara_usuario_entrada_vehicular": "Capturar imagen de Camera3",
             "/capture/camara_cedula_entrada_vehicular": "Capturar imagen de Camera250",
@@ -51,6 +58,101 @@ async def root():
 async def health():
     """Verificar estado de la API"""
     return {"status": "OK", "message": "API funcionando correctamente"}
+
+@app.post("/capture/integrada")
+async def capture_integrada(db: Session = Depends(get_db)):
+    """
+    Captura integrada de las 3 cámaras:
+    1. Captura imagen de placa
+    2. Captura imagen de usuario
+    3. Captura imagen de cédula y extrae OCR
+    4. Verifica si la persona existe en BD
+    5. Guarda en BD y organiza imágenes por cédula
+    """
+    try:
+        # Capturar las 3 imágenes
+        result_placa = capture_camera1(OUTPUT_DIR)
+        result_usuario = capture_camera3(OUTPUT_DIR)
+        result_cedula = capture_camera250(OUTPUT_DIR)
+        
+        if not (result_placa['success'] and result_usuario['success'] and result_cedula['success']):
+            limpiar_archivos_temporales(
+                result_placa.get('file'),
+                result_usuario.get('file'),
+                result_cedula.get('file')
+            )
+            raise HTTPException(
+                status_code=500,
+                detail="Error capturando imágenes"
+            )
+        
+        # Extraer número de cédula con OCR
+        cedula_numero = ocr_processor.extraer_numero_cedula(result_cedula['file'])
+        
+        if not cedula_numero:
+            limpiar_archivos_temporales(
+                result_placa['file'],
+                result_usuario['file'],
+                result_cedula['file']
+            )
+            raise HTTPException(
+                status_code=400,
+                detail="No se pudo extraer número de cédula"
+            )
+        
+        # Verificar si la persona existe
+        persona = db.query(Persona).filter(Persona.cedula_numero == cedula_numero).first()
+        
+        if not persona:
+            persona = Persona(cedula_numero=cedula_numero)
+            db.add(persona)
+            db.commit()
+            db.refresh(persona)
+        
+        # Organizar imágenes en carpeta de cédula
+        rutas_organizadas = organizar_imagenes(
+            cedula_numero,
+            result_cedula['file'],
+            result_usuario['file'],
+            result_placa['file']
+        )
+        
+        if not rutas_organizadas:
+            raise HTTPException(
+                status_code=500,
+                detail="Error organizando imágenes"
+            )
+        
+        # Guardar captura en BD
+        captura = Captura(
+            persona_id=persona.id,
+            ruta_imagen_cedula=rutas_organizadas['cedula'],
+            ruta_imagen_usuario=rutas_organizadas['usuario'],
+            ruta_imagen_placa=rutas_organizadas['placa']
+        )
+        db.add(captura)
+        db.commit()
+        db.refresh(captura)
+        
+        return JSONResponse(
+            status_code=200,
+            content={
+                "success": True,
+                "cedula_numero": cedula_numero,
+                "persona_id": persona.id,
+                "captura_id": captura.id,
+                "rutas": rutas_organizadas,
+                "mensaje": "Captura integrada guardada exitosamente"
+            }
+        )
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error en captura integrada: {str(e)}"
+        )
 
 @app.post("/capture/camara_placa_entrada_vehicular")
 async def capture_camera1_endpoint():

@@ -1,0 +1,20 @@
+version: '3.8'
+
+services:
+  api:
+    build: .
+    container_name: camera_capture_api
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./snapshots_camaras:/app/snapshots_camaras
+      - ./app.db:/app/app.db
+    environment:
+      - PYTHONUNBUFFERED=1
+    restart: unless-stopped
+    networks:
+      - camera_network
+
+networks:
+  camera_network:
+    driver: bridge
