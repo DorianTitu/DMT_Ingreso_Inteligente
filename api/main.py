@@ -67,7 +67,7 @@ async def capture_integrada(db: Session = Depends(get_db)):
     3. Captura imagen de cédula y extrae OCR
     4. Verifica si la persona existe en BD
     5. Guarda registro en BD
-    6. Devuelve imágenes en base64
+    6. Devuelve imágenes en base64 + datos de cédula
     """
     try:
         # Capturar las 3 imágenes
@@ -81,13 +81,16 @@ async def capture_integrada(db: Session = Depends(get_db)):
                 detail="Error capturando imágenes"
             )
         
-        # Extraer número de cédula con OCR
-        cedula_numero = ocr_processor.extraer_numero_cedula(result_cedula['file'])
+        # Extraer datos de cédula con OCR
+        datos_cedula = ocr_processor.extraer_datos_cedula(result_cedula['file'])
+        nui = datos_cedula.get('nui')
+        nombres = datos_cedula.get('nombres')
+        apellidos = datos_cedula.get('apellidos')
         
-        if not cedula_numero:
+        if not nui:
             raise HTTPException(
                 status_code=400,
-                detail="No se pudo extraer número de cédula"
+                detail="No se pudo extraer NUI de la cédula"
             )
         
         # Convertir imágenes a base64
@@ -101,10 +104,10 @@ async def capture_integrada(db: Session = Depends(get_db)):
             cedula_b64 = base64.b64encode(f.read()).decode('utf-8')
         
         # Verificar si la persona existe
-        persona = db.query(Persona).filter(Persona.cedula_numero == cedula_numero).first()
+        persona = db.query(Persona).filter(Persona.cedula_numero == nui).first()
         
         if not persona:
-            persona = Persona(cedula_numero=cedula_numero)
+            persona = Persona(cedula_numero=nui)
             db.add(persona)
             db.commit()
             db.refresh(persona)
@@ -124,7 +127,11 @@ async def capture_integrada(db: Session = Depends(get_db)):
             status_code=200,
             content={
                 "success": True,
-                "cedula_numero": cedula_numero,
+                "datos_cedula": {
+                    "nui": nui,
+                    "nombres": nombres,
+                    "apellidos": apellidos
+                },
                 "persona_id": persona.id,
                 "captura_id": captura.id,
                 "imagenes": {
@@ -203,32 +210,75 @@ async def capture_camera3_endpoint():
         )
 
 @app.post("/capture/camara_cedula_entrada_vehicular")
-async def capture_camera250_endpoint():
+async def capture_cedula_endpoint(db: Session = Depends(get_db)):
     """
-    Captura imagen de Camera250 (192.168.1.250)
-    Protocolo: RTSP
-    Descripción: Cedula entrada vehicular
+    Captura imagen de la cédula y extrae datos:
+    - NUI (número de cédula)
+    - Nombres
+    - Apellidos
+    Devuelve solo JSON con datos, sin imagen
     """
-    result = capture_camera250(OUTPUT_DIR)
+    result_cedula = capture_camera250(OUTPUT_DIR)
     
-    if result['success']:
-        image_base64 = image_to_base64(result['file'])
+    if not result_cedula['success']:
+        raise HTTPException(
+            status_code=500,
+            detail="Error capturando imagen de cédula"
+        )
+    
+    try:
+        # Extraer todos los datos de la cédula
+        datos_cedula = ocr_processor.extraer_datos_cedula(result_cedula['file'])
+        
+        nui = datos_cedula.get('nui')
+        nombres = datos_cedula.get('nombres')
+        apellidos = datos_cedula.get('apellidos')
+        
+        if not nui:
+            raise HTTPException(
+                status_code=400,
+                detail="No se pudo extraer NUI de la cédula"
+            )
+        
+        # Verificar si la persona existe en BD
+        persona = db.query(Persona).filter(Persona.cedula_numero == nui).first()
+        
+        if not persona:
+            persona = Persona(cedula_numero=nui)
+            db.add(persona)
+            db.commit()
+            db.refresh(persona)
+        
+        # Guardar captura en BD
+        captura = Captura(
+            persona_id=persona.id,
+            ruta_imagen_cedula=result_cedula['file'],
+            ruta_imagen_usuario=None,
+            ruta_imagen_placa=None
+        )
+        db.add(captura)
+        db.commit()
+        db.refresh(captura)
+        
         return JSONResponse(
             status_code=200,
             content={
                 "success": True,
-                "camera": result['camera'],
-                "ip": result['ip'],
-                "file": result['file'],
-                "size_bytes": result['size'],
-                "image_base64": image_base64,
-                "message": "Captura exitosa"
+                "nui": nui,
+                "nombres": nombres,
+                "apellidos": apellidos,
+                "persona_id": persona.id,
+                "captura_id": captura.id,
+                "mensaje": "Datos de cédula extraídos exitosamente"
             }
         )
-    else:
+    
+    except HTTPException:
+        raise
+    except Exception as e:
         raise HTTPException(
             status_code=500,
-            detail=f"Error al capturar imagen de {result['camera']}: {result.get('error', 'Desconocido')}"
+            detail=f"Error extrayendo datos de cédula: {str(e)}"
         )
 
 @app.post("/capture/all")
