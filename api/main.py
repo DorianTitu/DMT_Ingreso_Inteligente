@@ -4,16 +4,15 @@ Endpoints para capturar imágenes de las 3 cámaras
 """
 
 from fastapi import FastAPI, HTTPException, Depends
-from fastapi.responses import JSONResponse, FileResponse
-from fastapi.staticfiles import StaticFiles
+from fastapi.responses import JSONResponse
 import os
 import base64
+from datetime import datetime
 from sqlalchemy.orm import Session
 
 from camera_capture import capture_camera1, capture_camera3, capture_camera250
 from database import init_db, get_db, Persona, Captura
 from ocr_processor import ocr_processor
-from file_manager import organizar_imagenes, limpiar_archivos_temporales
 
 # Crear aplicación FastAPI
 app = FastAPI(
@@ -67,7 +66,8 @@ async def capture_integrada(db: Session = Depends(get_db)):
     2. Captura imagen de usuario
     3. Captura imagen de cédula y extrae OCR
     4. Verifica si la persona existe en BD
-    5. Guarda en BD y organiza imágenes por cédula
+    5. Guarda registro en BD
+    6. Devuelve imágenes en base64
     """
     try:
         # Capturar las 3 imágenes
@@ -76,11 +76,6 @@ async def capture_integrada(db: Session = Depends(get_db)):
         result_cedula = capture_camera250(OUTPUT_DIR)
         
         if not (result_placa['success'] and result_usuario['success'] and result_cedula['success']):
-            limpiar_archivos_temporales(
-                result_placa.get('file'),
-                result_usuario.get('file'),
-                result_cedula.get('file')
-            )
             raise HTTPException(
                 status_code=500,
                 detail="Error capturando imágenes"
@@ -90,15 +85,20 @@ async def capture_integrada(db: Session = Depends(get_db)):
         cedula_numero = ocr_processor.extraer_numero_cedula(result_cedula['file'])
         
         if not cedula_numero:
-            limpiar_archivos_temporales(
-                result_placa['file'],
-                result_usuario['file'],
-                result_cedula['file']
-            )
             raise HTTPException(
                 status_code=400,
                 detail="No se pudo extraer número de cédula"
             )
+        
+        # Convertir imágenes a base64
+        with open(result_placa['file'], 'rb') as f:
+            placa_b64 = base64.b64encode(f.read()).decode('utf-8')
+        
+        with open(result_usuario['file'], 'rb') as f:
+            usuario_b64 = base64.b64encode(f.read()).decode('utf-8')
+        
+        with open(result_cedula['file'], 'rb') as f:
+            cedula_b64 = base64.b64encode(f.read()).decode('utf-8')
         
         # Verificar si la persona existe
         persona = db.query(Persona).filter(Persona.cedula_numero == cedula_numero).first()
@@ -109,26 +109,12 @@ async def capture_integrada(db: Session = Depends(get_db)):
             db.commit()
             db.refresh(persona)
         
-        # Organizar imágenes en carpeta de cédula
-        rutas_organizadas = organizar_imagenes(
-            cedula_numero,
-            result_cedula['file'],
-            result_usuario['file'],
-            result_placa['file']
-        )
-        
-        if not rutas_organizadas:
-            raise HTTPException(
-                status_code=500,
-                detail="Error organizando imágenes"
-            )
-        
-        # Guardar captura en BD
+        # Guardar captura en BD (sin rutas de archivo)
         captura = Captura(
             persona_id=persona.id,
-            ruta_imagen_cedula=rutas_organizadas['cedula'],
-            ruta_imagen_usuario=rutas_organizadas['usuario'],
-            ruta_imagen_placa=rutas_organizadas['placa']
+            ruta_imagen_cedula=result_cedula['file'],
+            ruta_imagen_usuario=result_usuario['file'],
+            ruta_imagen_placa=result_placa['file']
         )
         db.add(captura)
         db.commit()
@@ -141,8 +127,12 @@ async def capture_integrada(db: Session = Depends(get_db)):
                 "cedula_numero": cedula_numero,
                 "persona_id": persona.id,
                 "captura_id": captura.id,
-                "rutas": rutas_organizadas,
-                "mensaje": "Captura integrada guardada exitosamente"
+                "imagenes": {
+                    "placa_base64": placa_b64,
+                    "usuario_base64": usuario_b64,
+                    "cedula_base64": cedula_b64
+                },
+                "mensaje": "Captura integrada completada exitosamente"
             }
         )
     
