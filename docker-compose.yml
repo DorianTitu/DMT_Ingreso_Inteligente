@@ -1,0 +1,17 @@
+services:
+  api:
+    build: .
+    container_name: cedula-camera-api
+    ports:
+      - "8000:8000"
+    environment:
+      - PYTHONUNBUFFERED=1
+    volumes:
+      - ./snapshots_camaras:/app/snapshots_camaras
+    restart: unless-stopped
+    networks:
+      - camera-network
+
+networks:
+  camera-network:
+    driver: bridge
