@@ -3,12 +3,13 @@ API FastAPI para captura de cámaras ONVIF-Dahua
 Endpoints para capturar imágenes de las 3 cámaras
 """
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, File, UploadFile
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 import os
 import base64
 from datetime import datetime
+import tempfile
 
 from camera_capture import (
     capture_camera1, 
@@ -17,7 +18,7 @@ from camera_capture import (
     capturar_y_extraer_cedula,
     extraer_datos_cedula
 )
-from ocr_processor import ocr_processor
+from ocr_processor import ocr_processor, CedulaOCR
 from data_storage import DataStorage
 
 # ============ MODELOS PYDANTIC ============
@@ -546,6 +547,57 @@ async def get_records(storage_path: str):
         raise HTTPException(
             status_code=500,
             detail=f"Error obteniendo registros: {str(e)}"
+        )
+
+@app.post("/analyze/cedula")
+async def analyze_cedula_image(file: UploadFile = File(...)):
+    """
+    Analiza una imagen de cédula y extrae los datos usando OCR
+    
+    Parameters:
+    - file: Archivo de imagen (JPG, PNG, etc)
+    
+    Returns:
+    - nui: Número de identificación único
+    - nombres: Nombres extraídos de la cédula
+    - apellidos: Apellidos extraídos de la cédula
+    """
+    try:
+        # Crear directorio temporal si no existe
+        os.makedirs(OUTPUT_DIR, exist_ok=True)
+        
+        # Guardar archivo temporalmente
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        file_path = os.path.join(OUTPUT_DIR, f"cedula_analisis_{timestamp}_{file.filename}")
+        
+        # Guardar el archivo subido
+        with open(file_path, 'wb') as f:
+            contents = await file.read()
+            f.write(contents)
+        
+        # Crear instancia de OCR y procesar
+        ocr = CedulaOCR()
+        datos = ocr.extraer_datos_cedula(file_path)
+        
+        return JSONResponse(
+            status_code=200,
+            content={
+                "success": True,
+                "file_name": file.filename,
+                "file_saved": file_path,
+                "cedula": {
+                    "nui": datos.get('nui'),
+                    "nombres": datos.get('nombres'),
+                    "apellidos": datos.get('apellidos')
+                },
+                "mensaje": "Análisis OCR completado exitosamente"
+            }
+        )
+    
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error analizando imagen: {str(e)}"
         )
 
 if __name__ == "__main__":
