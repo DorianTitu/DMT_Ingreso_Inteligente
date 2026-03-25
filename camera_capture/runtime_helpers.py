@@ -3,8 +3,10 @@ Helpers compartidos para ejecución de capturas.
 """
 
 import shutil
+from functools import lru_cache
 
 
+@lru_cache(maxsize=1)
 def get_ffmpeg_path() -> str:
     """
     Obtiene la ruta del ejecutable ffmpeg.
