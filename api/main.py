@@ -107,6 +107,8 @@ def build_capture_response(result: dict, error_prefix: str) -> JSONResponse:
             "temp_file_removed": temp_file_removed,
             "size_bytes": result['size'],
             "image_base64": image_base64,
+            "ocr_data": result.get('ocr_data'),
+            "ocr_error": result.get('ocr_error'),
             "message": "Captura exitosa"
         }
     )
