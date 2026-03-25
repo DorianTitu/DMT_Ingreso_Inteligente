@@ -313,6 +313,122 @@ class RegistroVehicular:
             print(f"Error actualizando hora de salida: {e}")
             return False
 
+    def _normalizar_codigo_ticket(self, ticket_ref: str) -> str:
+        """Convierte referencias de ticket a formato TICKET_######."""
+        if ticket_ref is None:
+            return ""
+
+        valor = str(ticket_ref).strip()
+        if not valor:
+            return ""
+
+        if valor.isdigit():
+            return f"TICKET_{int(valor):06d}"
+
+        valor_upper = valor.upper()
+        if valor_upper.startswith("TICKET_"):
+            sufijo = valor_upper.split("_", 1)[1]
+            if sufijo.isdigit():
+                return f"TICKET_{int(sufijo):06d}"
+            return valor_upper
+
+        return valor_upper
+
+    def actualizar_hora_salida_por_ticket(self, ticket_ref: str, hora_salida: Optional[str] = None) -> Dict:
+        """
+        Actualiza la hora de salida por número o código de ticket.
+
+        Args:
+            ticket_ref: Número (ej: 1) o código (ej: TICKET_000001)
+            hora_salida: Hora de salida HH:MM:SS. Si no se envía, usa la hora actual.
+
+        Returns:
+            dict con resultado de la actualización.
+        """
+        try:
+            codigo_ticket = self._normalizar_codigo_ticket(ticket_ref)
+            if not codigo_ticket:
+                return {
+                    'success': False,
+                    'error': 'Ticket inválido'
+                }
+
+            hora_final = hora_salida or datetime.now().strftime("%H:%M:%S")
+
+            wb = openpyxl.load_workbook(self.ruta_excel)
+            ws = wb["Registros"]
+
+            for fila in range(2, ws.max_row + 1):
+                numero_ticket_celda = str(ws.cell(row=fila, column=1).value or "").strip().upper()
+                if numero_ticket_celda == codigo_ticket:
+                    ws.cell(row=fila, column=6, value=hora_final)
+                    wb.save(self.ruta_excel)
+                    wb.close()
+                    return {
+                        'success': True,
+                        'ticket': codigo_ticket,
+                        'hora_salida': hora_final,
+                        'mensaje': f'Hora de salida actualizada para {codigo_ticket}'
+                    }
+
+            wb.close()
+            return {
+                'success': False,
+                'error': f'No se encontró el ticket {codigo_ticket}'
+            }
+
+        except Exception as e:
+            return {
+                'success': False,
+                'error': str(e)
+            }
+
+    def obtener_todos_tickets(self) -> Dict:
+        """
+        Lee el Excel maestro y retorna todos los tickets registrados.
+
+        Returns:
+            dict con estado y lista de tickets.
+        """
+        try:
+            wb = openpyxl.load_workbook(self.ruta_excel, data_only=True)
+            ws = wb["Registros"]
+
+            tickets = []
+            for fila in ws.iter_rows(min_row=2, values_only=True):
+                if not fila or not fila[0]:
+                    continue
+
+                hora_salida = fila[5]
+                if hora_salida is None or str(hora_salida).strip() == "":
+                    hora_salida = "No ha salido"
+
+                tickets.append({
+                    'numero_ticket': fila[0],
+                    'nombres': fila[1] or "",
+                    'apellidos': fila[2] or "",
+                    'cedula': fila[3] or "",
+                    'hora_ingreso': fila[4] or "",
+                    'hora_salida': hora_salida,
+                    'departamento': fila[6] or "",
+                    'motivo': fila[7] or "",
+                    'fecha_registro': fila[8] or "",
+                })
+
+            wb.close()
+            return {
+                'success': True,
+                'total': len(tickets),
+                'tickets': tickets,
+            }
+        except Exception as e:
+            return {
+                'success': False,
+                'error': str(e),
+                'total': 0,
+                'tickets': [],
+            }
+
 
 # Instancia global (se inicializará en la API)
 registro_manager = None

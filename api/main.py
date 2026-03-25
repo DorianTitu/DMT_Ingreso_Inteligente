@@ -10,6 +10,7 @@ from typing import Optional
 import os
 import base64
 import sys
+import tempfile
 from dotenv import load_dotenv
 
 # Cargar variables de entorno desde .env
@@ -23,7 +24,7 @@ from camera_capture import (
 
 # Agregar el directorio padre al path para importar registro_vehicular
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from registro_vehicular import inicializar_registro_manager, registro_manager
+import registro_vehicular
 
 # Crear aplicación FastAPI
 app = FastAPI(
@@ -32,7 +33,7 @@ app = FastAPI(
     version="1.0.0"
 )
 
-OUTPUT_DIR = "snapshots_camaras"
+OUTPUT_DIR = os.path.join(tempfile.gettempdir(), "dmt_capture_tmp")
 
 # ============ MODELOS PYDANTIC ============
 
@@ -63,6 +64,12 @@ class RegistroVehicularRequest(BaseModel):
             }
         }
 
+
+class HoraSalidaRequest(BaseModel):
+    """Modelo para actualizar hora de salida por ticket."""
+    ticket: str
+    hora_salida: Optional[str] = None
+
 # ============ FUNCIONES AUXILIARES ============
 
 def image_to_base64(file_path: str) -> str:
@@ -79,14 +86,25 @@ def build_capture_response(result: dict, error_prefix: str) -> JSONResponse:
             detail=f"{error_prefix}: {result.get('error', 'Desconocido')}"
         )
 
-    image_base64 = image_to_base64(result['file'])
+    captured_file = result['file']
+    image_base64 = image_to_base64(captured_file)
+
+    temp_file_removed = False
+    if captured_file and os.path.exists(captured_file):
+        try:
+            os.remove(captured_file)
+            temp_file_removed = True
+        except OSError:
+            temp_file_removed = False
+
     return JSONResponse(
         status_code=200,
         content={
             "success": True,
             "camera": result['camera'],
             "ip": result['ip'],
-            "file": result['file'],
+            "file": captured_file,
+            "temp_file_removed": temp_file_removed,
             "size_bytes": result['size'],
             "image_base64": image_base64,
             "message": "Captura exitosa"
@@ -105,7 +123,7 @@ async def startup_event():
     )
     
     print(f"📁 Ruta de registros: {ruta_base}")
-    inicializar_registro_manager(ruta_base)
+    registro_vehicular.inicializar_registro_manager(ruta_base)
 
 @app.get("/")
 async def root():
@@ -121,7 +139,9 @@ async def root():
                 "/capture/camara_cedula_entrada_vehicular": "Capturar imagen de Camera250"
             },
             "registro": {
-                "/save/registro_vehicular": "Guardar registro completo de ingreso vehicular"
+                "/save/registro_vehicular": "Guardar registro completo de ingreso vehicular",
+                "/get/registro_vehicular": "Listar todos los tickets desde el Excel",
+                "/update/hora_salida": "Actualizar hora de salida por ticket"
             },
             "salud": {
                 "/health": "Estado de salud de la API"
@@ -180,7 +200,7 @@ async def save_registro_vehicular(registro: RegistroVehicularRequest):
         "ruta_ticket": "C:/ruta/2026/01_Enero/15/TICKET_000042"
     }
     """
-    if registro_manager is None:
+    if registro_vehicular.registro_manager is None:
         raise HTTPException(
             status_code=500,
             detail="El sistema de registro no está inicializado"
@@ -201,7 +221,7 @@ async def save_registro_vehicular(registro: RegistroVehicularRequest):
         }
         
         # Guardar registro
-        resultado = registro_manager.guardar_registro(datos)
+        resultado = registro_vehicular.registro_manager.guardar_registro(datos)
         
         if resultado.get('success'):
             return JSONResponse(
@@ -226,6 +246,62 @@ async def save_registro_vehicular(registro: RegistroVehicularRequest):
             status_code=500,
             detail=f"Error procesando registro: {str(e)}"
         )
+
+
+@app.get("/get/registro_vehicular")
+async def get_registro_vehicular():
+    """Lista todos los tickets del Excel maestro de ingreso vehicular."""
+    if registro_vehicular.registro_manager is None:
+        raise HTTPException(
+            status_code=500,
+            detail="El sistema de registro no está inicializado"
+        )
+
+    resultado = registro_vehicular.registro_manager.obtener_todos_tickets()
+    if not resultado.get('success'):
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error leyendo tickets: {resultado.get('error', 'Desconocido')}"
+        )
+
+    return JSONResponse(
+        status_code=200,
+        content={
+            'success': True,
+            'total': resultado.get('total', 0),
+            'tickets': resultado.get('tickets', []),
+        }
+    )
+
+
+@app.post("/update/hora_salida")
+async def update_hora_salida(payload: HoraSalidaRequest):
+    """Actualiza hora de salida usando número o código de ticket."""
+    if registro_vehicular.registro_manager is None:
+        raise HTTPException(
+            status_code=500,
+            detail="El sistema de registro no está inicializado"
+        )
+
+    resultado = registro_vehicular.registro_manager.actualizar_hora_salida_por_ticket(
+        payload.ticket,
+        payload.hora_salida
+    )
+
+    if not resultado.get('success'):
+        detalle = resultado.get('error', 'Desconocido')
+        status_code = 404 if 'No se encontró el ticket' in detalle else 400
+        raise HTTPException(status_code=status_code, detail=detalle)
+
+    return JSONResponse(
+        status_code=200,
+        content={
+            'success': True,
+            'ticket': resultado.get('ticket'),
+            'hora_salida': resultado.get('hora_salida'),
+            'mensaje': resultado.get('mensaje')
+        }
+    )
 
 if __name__ == "__main__":
     import uvicorn
