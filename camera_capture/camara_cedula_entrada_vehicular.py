@@ -24,6 +24,8 @@ except Exception as exc:
 MIN_VALID_IMAGE_BYTES = 20000
 OCR_LANGS = ['es', 'en']
 _OCR_READER = None
+FAST_OCR_MODE = True
+MAX_OCR_IMAGE_WIDTH = 1050
 CARD_HEADERS = {
     'APELLIDOS',
     'NOMBRES',
@@ -110,6 +112,12 @@ def _collect_values_after_header(upper_lines: list[str], start_idx: int, max_ite
 
 
 def _preprocess_image_for_ocr(image: Image.Image) -> np.ndarray:
+    # Reduccion agresiva para OCR rapido en CPU.
+    width, height = image.size
+    if FAST_OCR_MODE and width > MAX_OCR_IMAGE_WIDTH:
+        ratio = MAX_OCR_IMAGE_WIDTH / float(width)
+        image = image.resize((MAX_OCR_IMAGE_WIDTH, int(height * ratio)), Image.BILINEAR)
+
     gray = image.convert('L')
     gray = ImageOps.autocontrast(gray)
     return np.array(gray)
@@ -122,6 +130,14 @@ def _ocr_lines(reader, image_array: np.ndarray, allowlist: str | None = None) ->
         paragraph=False,
         decoder='greedy',
         beamWidth=1,
+        batch_size=8,
+        workers=0,
+        min_size=18,
+        text_threshold=0.35,
+        low_text=0.2,
+        link_threshold=0.2,
+        canvas_size=1280,
+        mag_ratio=1.0,
         allowlist=allowlist,
     )
     return [_normalize_spaces(line) for line in lines if _normalize_spaces(line)]
@@ -148,6 +164,15 @@ def _get_ocr_reader():
         raise RuntimeError('EasyOCR no está instalado. Ejecuta: pip install -r requirements.txt')
 
     if _OCR_READER is None:
+        try:
+            import torch
+            cpu_count = os.cpu_count() or 8
+            # Usa casi todos los hilos lógicos para maximizar throughput en CPU.
+            torch.set_num_threads(max(2, cpu_count - 1))
+            torch.set_num_interop_threads(1)
+        except Exception:
+            pass
+
         _OCR_READER = easyocr.Reader(OCR_LANGS, gpu=False)
     return _OCR_READER
 
@@ -191,6 +216,14 @@ def _extract_name_parts(lines: list[str]) -> tuple[str | None, str | None]:
 
     apellidos = None
     nombres = None
+    combined_name_field = any(
+        ('APELLIDOS Y NOMBRES' in _normalize_key(line) or 'NOMBRES Y APELLIDOS' in _normalize_key(line))
+        for line in upper_lines
+    )
+    has_separated_nombres_field = any(
+        ('NOMBR' in _normalize_key(line) and 'APELLID' not in _normalize_key(line))
+        for line in upper_lines
+    )
 
     # Formato 1: APELLIDOS (debajo apellidos) y NOMBRES (debajo nombres).
     for idx, line in enumerate(upper_lines):
@@ -200,6 +233,17 @@ def _extract_name_parts(lines: list[str]) -> tuple[str | None, str | None]:
             if values:
                 apellidos = ' '.join(values)
                 break
+
+    # Regla adicional (formato 1): debajo de CONDICION CIUDADANIA/NNA suelen estar los apellidos.
+    # Solo aplica cuando NO es formato combinado y SI existe campo NOMBRES separado.
+    if not apellidos and not combined_name_field and has_separated_nombres_field:
+        for idx, line in enumerate(upper_lines):
+            line_key = _normalize_key(line)
+            if 'CONDICION' in line_key and ('CIUDADAN' in line_key or 'NNA' in line_key):
+                values = _collect_values_after_header(upper_lines, idx, max_items=2)
+                if values:
+                    apellidos = ' '.join(values)
+                    break
 
     for idx, line in enumerate(upper_lines):
         line_key = _normalize_key(line)
@@ -238,21 +282,32 @@ def extract_cedula_data_from_image(image_path: str) -> dict:
     width, height = image.size
 
     # OCR por regiones para acelerar procesamiento.
-    info_crop = image.crop((int(width * 0.25), int(height * 0.02), width, height))
-    nui_crop = image.crop((0, int(height * 0.75), int(width * 0.62), height))
+    if FAST_OCR_MODE:
+        info_crop = image.crop((int(width * 0.32), int(height * 0.06), int(width * 0.98), int(height * 0.95)))
+        nui_crop = image.crop((int(width * 0.00), int(height * 0.78), int(width * 0.56), int(height * 0.99)))
+    else:
+        info_crop = image.crop((int(width * 0.25), int(height * 0.02), width, height))
+        nui_crop = image.crop((0, int(height * 0.75), int(width * 0.62), height))
 
+    # Primera pasada: intenta resolver todo con una sola lectura OCR.
     info_lines = _ocr_lines(reader, _preprocess_image_for_ocr(info_crop))
-    nui_lines = _ocr_lines(reader, _preprocess_image_for_ocr(nui_crop), allowlist='0123456789NUI.NO')
+    lines = _dedupe_preserve_order(info_lines)
+
+    # Segunda pasada solo si no se pudo identificar cédula en la primera.
+    cedula_first_pass = _extract_cedula(lines)
+    if cedula_first_pass:
+        nui_lines = []
+    else:
+        nui_lines = _ocr_lines(reader, _preprocess_image_for_ocr(nui_crop), allowlist='0123456789NUI.NO')
+        lines = _dedupe_preserve_order(info_lines + nui_lines)
 
     ocr_finished = time.perf_counter()
-
-    lines = _dedupe_preserve_order(info_lines + nui_lines)
     confidences = []
 
     if lines:
         confidences = [1.0 for _ in lines]
 
-    cedula = _extract_cedula(lines)
+    cedula = cedula_first_pass or _extract_cedula(lines)
     apellidos, nombres = _extract_name_parts(lines)
     parse_finished = time.perf_counter()
 
@@ -267,6 +322,7 @@ def extract_cedula_data_from_image(image_path: str) -> dict:
             'ocr_ms': int((ocr_finished - started) * 1000),
             'parse_ms': int((parse_finished - ocr_finished) * 1000),
             'total_ms': int((parse_finished - started) * 1000),
+            'second_pass_used': not bool(cedula_first_pass),
         },
     }
 
@@ -292,10 +348,12 @@ def capture_camera250(output_dir: str = "snapshots_camaras") -> dict:
     
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     output_file = os.path.join(output_dir, f"camara_cedula_entrada_vehicular_{timestamp}.jpg")
+    overall_started = time.perf_counter()
     
     try:
         errors = []
         for transport in ('tcp', 'udp'):
+            capture_started = time.perf_counter()
             cmd = _build_ffmpeg_cmd(rtsp_url, output_file, transport)
             result = subprocess.run(cmd, capture_output=True, timeout=15)
 
@@ -303,13 +361,19 @@ def capture_camera250(output_dir: str = "snapshots_camaras") -> dict:
             if result.returncode == 0 and os.path.exists(output_file) and os.path.getsize(output_file) >= MIN_VALID_IMAGE_BYTES:
                 _recortar_imagen_cedula(output_file)
                 file_size = os.path.getsize(output_file)
+                capture_ms = int((time.perf_counter() - capture_started) * 1000)
 
                 ocr_data = None
                 ocr_error = None
+                ocr_ms = None
                 try:
                     ocr_data = extract_cedula_data_from_image(output_file)
+                    if ocr_data and isinstance(ocr_data.get('tiempos_ms'), dict):
+                        ocr_ms = ocr_data['tiempos_ms'].get('ocr_ms')
                 except Exception as ocr_exc:
                     ocr_error = str(ocr_exc)
+
+                total_pipeline_ms = int((time.perf_counter() - overall_started) * 1000)
 
                 return {
                     'success': True,
@@ -319,6 +383,11 @@ def capture_camera250(output_dir: str = "snapshots_camaras") -> dict:
                     'ip': ip,
                     'ocr_data': ocr_data,
                     'ocr_error': ocr_error,
+                    'timings': {
+                        'capture_ms': capture_ms,
+                        'ocr_ms': ocr_ms,
+                        'total_pipeline_ms': total_pipeline_ms,
+                    }
                 }
 
             if os.path.exists(output_file):

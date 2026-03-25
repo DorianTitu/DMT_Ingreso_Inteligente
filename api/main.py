@@ -110,6 +110,7 @@ def build_capture_response(result: dict, error_prefix: str) -> JSONResponse:
             "image_base64": image_base64,
             "ocr_data": result.get('ocr_data'),
             "ocr_error": result.get('ocr_error'),
+            "timings": result.get('timings'),
             "message": "Captura exitosa"
         }
     )
