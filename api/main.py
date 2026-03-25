@@ -1,19 +1,29 @@
 """
 API FastAPI para captura de cámaras ONVIF-Dahua
-Endpoints para capturar imágenes de las 3 cámaras
+Endpoints para capturar imágenes de las 3 cámaras y guardar registros
 """
 
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel
+from typing import Optional
 import os
 import base64
-from typing import Callable
+import sys
+from dotenv import load_dotenv
+
+# Cargar variables de entorno desde .env
+load_dotenv()
 
 from camera_capture import (
     capture_camera1, 
     capture_camera3, 
     capture_camera250
 )
+
+# Agregar el directorio padre al path para importar registro_vehicular
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from registro_vehicular import inicializar_registro_manager, registro_manager
 
 # Crear aplicación FastAPI
 app = FastAPI(
@@ -23,6 +33,35 @@ app = FastAPI(
 )
 
 OUTPUT_DIR = "snapshots_camaras"
+
+# ============ MODELOS PYDANTIC ============
+
+class RegistroVehicularRequest(BaseModel):
+    """Modelo para guardar un registro vehicular completo"""
+    nombres: str
+    apellidos: str
+    cedula: str
+    departamento: str
+    motivo: str
+    imagen_cedula_base64: Optional[str] = None
+    imagen_usuario_base64: Optional[str] = None
+    imagen_placa_base64: Optional[str] = None
+    hora_ingreso: Optional[str] = None
+    
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "nombres": "Juan",
+                "apellidos": "Pérez",
+                "cedula": "1234567890",
+                "departamento": "Administración",
+                "motivo": "Visita",
+                "imagen_cedula_base64": "base64_string...",
+                "imagen_usuario_base64": "base64_string...",
+                "imagen_placa_base64": "base64_string...",
+                "hora_ingreso": "14:30:45"
+            }
+        }
 
 # ============ FUNCIONES AUXILIARES ============
 
@@ -56,8 +95,17 @@ def build_capture_response(result: dict, error_prefix: str) -> JSONResponse:
 
 @app.on_event("startup")
 async def startup_event():
-    """Crear directorios necesarios"""
+    """Crear directorios necesarios e inicializar registro manager"""
     os.makedirs(OUTPUT_DIR, exist_ok=True)
+    
+    # Obtener ruta base desde .env o usar ruta relativa como fallback
+    ruta_base = os.environ.get(
+        'REGISTRO_VEHICULAR_PATH',
+        os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'registros_vehiculares')
+    )
+    
+    print(f"📁 Ruta de registros: {ruta_base}")
+    inicializar_registro_manager(ruta_base)
 
 @app.get("/")
 async def root():
@@ -65,12 +113,19 @@ async def root():
     return {
         "nombre": "Camera Capture API",
         "version": "1.0.0",
-        "descripcion": "API para capturar imágenes de cámaras Dahua ONVIF",
+        "descripcion": "API para capturar imágenes de cámaras Dahua ONVIF y guardar registros",
         "endpoints": {
-            "/capture/camara_placa_entrada_vehicular": "Capturar imagen de Camera1",
-            "/capture/camara_usuario_entrada_vehicular": "Capturar imagen de Camera3",
-            "/capture/camara_cedula_entrada_vehicular": "Capturar imagen de Camera250",
-            "/health": "Estado de salud de la API"
+            "capture": {
+                "/capture/camara_placa_entrada_vehicular": "Capturar imagen de Camera1",
+                "/capture/camara_usuario_entrada_vehicular": "Capturar imagen de Camera3",
+                "/capture/camara_cedula_entrada_vehicular": "Capturar imagen de Camera250"
+            },
+            "registro": {
+                "/save/registro_vehicular": "Guardar registro completo de ingreso vehicular"
+            },
+            "salud": {
+                "/health": "Estado de salud de la API"
+            }
         }
     }
 
@@ -108,6 +163,69 @@ async def capture_cedula_endpoint():
     """
     result = capture_camera250(OUTPUT_DIR)
     return build_capture_response(result, "Error en captura")
+
+@app.post("/save/registro_vehicular")
+async def save_registro_vehicular(registro: RegistroVehicularRequest):
+    """
+    Guarda un registro completo de ingreso vehicular
+    - Crea la estructura de carpetas (YEAR/MES/DIA/TICKET_#####)
+    - Guarda las imágenes en la carpeta del ticket
+    - Actualiza el Excel maestro
+    
+    Retorna:
+    {
+        "success": true,
+        "numero_ticket": 42,
+        "mensaje": "Registro TICKET_000042 guardado exitosamente",
+        "ruta_ticket": "C:/ruta/2026/01_Enero/15/TICKET_000042"
+    }
+    """
+    if registro_manager is None:
+        raise HTTPException(
+            status_code=500,
+            detail="El sistema de registro no está inicializado"
+        )
+    
+    try:
+        # Preparar datos
+        datos = {
+            'nombres': registro.nombres,
+            'apellidos': registro.apellidos,
+            'cedula': registro.cedula,
+            'departamento': registro.departamento,
+            'motivo': registro.motivo,
+            'imagen_cedula_base64': registro.imagen_cedula_base64,
+            'imagen_usuario_base64': registro.imagen_usuario_base64,
+            'imagen_placa_base64': registro.imagen_placa_base64,
+            'hora_ingreso': registro.hora_ingreso
+        }
+        
+        # Guardar registro
+        resultado = registro_manager.guardar_registro(datos)
+        
+        if resultado.get('success'):
+            return JSONResponse(
+                status_code=200,
+                content={
+                    "success": True,
+                    "numero_ticket": resultado['numero_ticket'],
+                    "codigo_ticket": f"TICKET_{resultado['numero_ticket']:06d}",
+                    "ruta_ticket": resultado['ruta_ticket'],
+                    "imagenes_guardadas": resultado['imagenes'],
+                    "mensaje": resultado['mensaje']
+                }
+            )
+        else:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Error al guardar registro: {resultado.get('error', 'Desconocido')}"
+            )
+    
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error procesando registro: {str(e)}"
+        )
 
 if __name__ == "__main__":
     import uvicorn
