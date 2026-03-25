@@ -21,6 +21,7 @@ from camera_capture import (
     capture_camera3, 
     capture_camera250
 )
+from camera_capture.camara_cedula_entrada_vehicular import warmup_cedula_ocr_reader
 
 # Agregar el directorio padre al path para importar registro_vehicular
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -126,6 +127,12 @@ async def startup_event():
     
     print(f"📁 Ruta de registros: {ruta_base}")
     registro_vehicular.inicializar_registro_manager(ruta_base)
+
+    try:
+        warmup_cedula_ocr_reader()
+        print("[OCR] EasyOCR precargado correctamente")
+    except Exception as exc:
+        print(f"[OCR] No se pudo precargar EasyOCR: {exc}")
 
 @app.get("/")
 async def root():
