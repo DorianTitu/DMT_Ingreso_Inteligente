@@ -8,6 +8,7 @@ import subprocess
 import os
 from datetime import datetime
 from PIL import Image
+from .runtime_helpers import get_ffmpeg_path, format_ffmpeg_error
 
 
 def _recortar_imagen_cedula(ruta_imagen: str) -> bool:
@@ -64,7 +65,7 @@ def capture_camera250(output_dir: str = "snapshots_camaras") -> dict:
     
     # Comando ffmpeg para capturar desde RTSP
     cmd = [
-        'ffmpeg',
+        get_ffmpeg_path(),
         '-rtsp_transport', 'tcp',
         '-i', rtsp_url,
         '-vframes', '1',
@@ -99,7 +100,7 @@ def capture_camera250(output_dir: str = "snapshots_camaras") -> dict:
                 'size': None,
                 'camera': 'Camera250 (Cedula)',
                 'ip': ip,
-                'error': f'Exit code: {result.returncode}'
+                'error': format_ffmpeg_error(result.returncode, result.stderr)
             }
     except subprocess.TimeoutExpired:
         if os.path.exists(output_file):
