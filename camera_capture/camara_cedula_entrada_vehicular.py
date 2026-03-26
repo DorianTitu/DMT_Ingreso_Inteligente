@@ -11,7 +11,7 @@ import time
 import unicodedata
 from datetime import datetime
 import numpy as np
-from PIL import Image, ImageOps
+from PIL import Image, ImageOps, ImageDraw
 from .runtime_helpers import get_ffmpeg_path, format_ffmpeg_error
 
 try:
@@ -22,25 +22,34 @@ except Exception as exc:
     OCR_IMPORT_ERROR = str(exc)
 
 MIN_VALID_IMAGE_BYTES = 20000
-OCR_LANGS = ['es', 'en']
+OCR_LANGS = ['es']
 _OCR_READER = None
 FAST_OCR_MODE = True
-MAX_OCR_IMAGE_WIDTH = 1050
+MAX_OCR_IMAGE_WIDTH = 650
+OCR_CANVAS_SIZE = 960
+DRAW_OCR_BOXES = False
+INCLUDE_OCR_DEBUG_TEXT = False
 CARD_HEADERS = {
     'APELLIDOS',
     'NOMBRES',
     'APELLIDOS Y NOMBRES',
-    'NOMBRES Y APELLIDOS',
-    'NACIONALIDAD',
-    'FECHA DE NACIMIENTO',
-    'LUGAR DE NACIMIENTO',
-    'SEXO',
-    'AUTODEFINICACION',
-    'FECHA DE VENCIMIENTO',
-    'CONDICION',
-    'CEDULA DE',
-    'CIUDADANIA',
+    'NOMBRES Y APELLIDOS'
 }
+NOISE_NAME_KEYS = {
+    'CONDICION',
+    'CIUDADANIA',
+    'NACIONALIDAD',
+    'SEXO',
+    'NACIMIENTO',
+    'VENCIMIENTO',
+}
+
+# Recortes de trabajo para OCR (porcentaje sobre imagen recortada).
+# Se usan los dos recortes para extraer nombres/apellidos y cédula.
+# Regla de cédula: primero buscar en CROP_ZONE_1_PCT y, si no aparece,
+# intentar en CROP_ZONE_2_PCT.
+CROP_ZONE_1_PCT = (0.33, 0.33, 0.98, 0.01)
+CROP_ZONE_2_PCT = (0.0, 0.80, 0.33, 0.65)
 
 
 def _build_ffmpeg_cmd(rtsp_url: str, output_file: str, transport: str) -> list[str]:
@@ -62,7 +71,7 @@ def _recortar_imagen_cedula(ruta_imagen: str) -> bool:
         img = Image.open(ruta_imagen)
         ancho, alto = img.size
 
-        top = int(alto * 0.17)
+        top = int(alto * 0.12)
         left = int(ancho * 0.2)
         right = ancho
         bottom = alto
@@ -72,6 +81,44 @@ def _recortar_imagen_cedula(ruta_imagen: str) -> bool:
         return True
     except Exception:
         return False
+
+
+def _rect_pct_to_pixels(size: tuple[int, int], rect_pct: tuple[float, float, float, float]) -> tuple[int, int, int, int]:
+    """Convierte porcentaje a pixeles y normaliza el rectangulo (x1<x2, y1<y2)."""
+    width, height = size
+    x1 = int(width * rect_pct[0])
+    y1 = int(height * rect_pct[1])
+    x2 = int(width * rect_pct[2])
+    y2 = int(height * rect_pct[3])
+
+    left = max(0, min(width, min(x1, x2)))
+    right = max(0, min(width, max(x1, x2)))
+    top = max(0, min(height, min(y1, y2)))
+    bottom = max(0, min(height, max(y1, y2)))
+    return (left, top, right, bottom)
+
+
+def _dibujar_cuadros_ocr(ruta_imagen: str, cedula_source: str | None = None) -> dict | None:
+    """Dibuja los dos recortes usados por OCR sobre la imagen final."""
+    try:
+        with Image.open(ruta_imagen) as img:
+            zone_1_px = _rect_pct_to_pixels(img.size, CROP_ZONE_1_PCT)
+            zone_2_px = _rect_pct_to_pixels(img.size, CROP_ZONE_2_PCT)
+            draw = ImageDraw.Draw(img)
+
+            color_1 = (0, 200, 0) if cedula_source == 'crop_zone_1' else (255, 0, 0)
+            color_2 = (0, 200, 0) if cedula_source == 'crop_zone_2' else (255, 0, 0)
+            draw.rectangle(zone_1_px, outline=color_1, width=5)
+            draw.rectangle(zone_2_px, outline=color_2, width=5)
+
+            img.save(ruta_imagen, quality=95)
+            return {
+                'crop_zone_1_px': zone_1_px,
+                'crop_zone_2_px': zone_2_px,
+                'cedula_source': cedula_source,
+            }
+    except Exception:
+        return None
 
 
 def _normalize_spaces(text: str) -> str:
@@ -90,6 +137,46 @@ def _clean_text_for_name(text: str) -> str:
     return _normalize_spaces(cleaned).upper()
 
 
+def _sanitize_nombres(nombres: str | None) -> str | None:
+    """Limita nombres a maximo 2 palabras y descarta NACIONALIDAD."""
+    if not nombres:
+        return None
+
+    tokens = []
+    for token in _normalize_spaces(nombres).split(' '):
+        key = _normalize_key(token)
+        if not key or key in NOISE_NAME_KEYS:
+            continue
+        tokens.append(token)
+
+    if not tokens:
+        return None
+
+    return ' '.join(tokens[:2])
+
+
+def _sanitize_apellidos(apellidos: str | None) -> str | None:
+    """Limpia ruido no util en apellidos (ej. CONDICION CIUDADANIA)."""
+    if not apellidos:
+        return None
+
+    tokens = []
+    for token in _normalize_spaces(apellidos).split(' '):
+        key = _normalize_key(token)
+        if not key or key in NOISE_NAME_KEYS:
+            continue
+        tokens.append(token)
+
+    return ' '.join(tokens) if tokens else None
+
+
+def _is_noise_name_line(text: str) -> bool:
+    line_key = _normalize_key(text)
+    if not line_key:
+        return True
+    return any(noise in line_key for noise in NOISE_NAME_KEYS)
+
+
 def _is_probable_header(line_key: str) -> bool:
     if not line_key:
         return False
@@ -105,6 +192,8 @@ def _collect_values_after_header(upper_lines: list[str], start_idx: int, max_ite
         candidate_key = _normalize_key(candidate)
         if _is_probable_header(candidate_key):
             break
+        if _is_noise_name_line(candidate):
+            continue
         values.append(candidate)
         if len(values) >= max_items:
             break
@@ -130,13 +219,13 @@ def _ocr_lines(reader, image_array: np.ndarray, allowlist: str | None = None) ->
         paragraph=False,
         decoder='greedy',
         beamWidth=1,
-        batch_size=8,
+        batch_size=4,
         workers=0,
         min_size=18,
-        text_threshold=0.35,
-        low_text=0.2,
-        link_threshold=0.2,
-        canvas_size=1280,
+        text_threshold=0.45,
+        low_text=0.3,
+        link_threshold=0.3,
+        canvas_size=OCR_CANVAS_SIZE,
         mag_ratio=1.0,
         allowlist=allowlist,
     )
@@ -210,7 +299,11 @@ def _extract_cedula(lines: list[str]) -> str | None:
 
 def _extract_name_parts(lines: list[str]) -> tuple[str | None, str | None]:
     """Extrae nombres y apellidos considerando dos formatos de cédula ecuatoriana."""
-    upper_lines = [_clean_text_for_name(line) for line in lines if line and line.strip()]
+    upper_lines = [
+        _clean_text_for_name(line)
+        for line in lines
+        if line and line.strip() and not _is_noise_name_line(line)
+    ]
     if not upper_lines:
         return None, None
 
@@ -233,17 +326,6 @@ def _extract_name_parts(lines: list[str]) -> tuple[str | None, str | None]:
             if values:
                 apellidos = ' '.join(values)
                 break
-
-    # Regla adicional (formato 1): debajo de CONDICION CIUDADANIA/NNA suelen estar los apellidos.
-    # Solo aplica cuando NO es formato combinado y SI existe campo NOMBRES separado.
-    if not apellidos and not combined_name_field and has_separated_nombres_field:
-        for idx, line in enumerate(upper_lines):
-            line_key = _normalize_key(line)
-            if 'CONDICION' in line_key and ('CIUDADAN' in line_key or 'NNA' in line_key):
-                values = _collect_values_after_header(upper_lines, idx, max_items=2)
-                if values:
-                    apellidos = ' '.join(values)
-                    break
 
     for idx, line in enumerate(upper_lines):
         line_key = _normalize_key(line)
@@ -281,50 +363,54 @@ def extract_cedula_data_from_image(image_path: str) -> dict:
     image = Image.open(image_path)
     width, height = image.size
 
-    # OCR por regiones para acelerar procesamiento.
-    if FAST_OCR_MODE:
-        info_crop = image.crop((int(width * 0.32), int(height * 0.06), int(width * 0.98), int(height * 0.95)))
-        nui_crop = image.crop((int(width * 0.00), int(height * 0.78), int(width * 0.56), int(height * 0.99)))
-    else:
-        info_crop = image.crop((int(width * 0.25), int(height * 0.02), width, height))
-        nui_crop = image.crop((0, int(height * 0.75), int(width * 0.62), height))
+    crop_zone_1_px = _rect_pct_to_pixels((width, height), CROP_ZONE_1_PCT)
+    crop_zone_2_px = _rect_pct_to_pixels((width, height), CROP_ZONE_2_PCT)
 
-    # Primera pasada: intenta resolver todo con una sola lectura OCR.
-    info_lines = _ocr_lines(reader, _preprocess_image_for_ocr(info_crop))
-    lines = _dedupe_preserve_order(info_lines)
+    crop_zone_1 = image.crop(crop_zone_1_px)
+    crop_zone_2 = image.crop(crop_zone_2_px)
 
-    # Segunda pasada solo si no se pudo identificar cédula en la primera.
-    cedula_first_pass = _extract_cedula(lines)
-    if cedula_first_pass:
-        nui_lines = []
-    else:
-        nui_lines = _ocr_lines(reader, _preprocess_image_for_ocr(nui_crop), allowlist='0123456789NUI.NO')
-        lines = _dedupe_preserve_order(info_lines + nui_lines)
+    # Una sola lectura pesada para nombres/apellidos (zona 1).
+    zone_1_lines = _ocr_lines(reader, _preprocess_image_for_ocr(crop_zone_1))
+
+    # Cedula: primero intenta con la lectura general de zona 1.
+    cedula = _extract_cedula(zone_1_lines)
+
+    cedula_source = 'crop_zone_1'
+    if not cedula:
+        # Solo si falla, hace una pasada enfocada para cédula en zona 2.
+        zone_2_cedula_lines = _ocr_lines(
+            reader,
+            _preprocess_image_for_ocr(crop_zone_2),
+            allowlist='0123456789NUI.NO'
+        )
+        cedula = _extract_cedula(zone_2_cedula_lines)
+        cedula_source = 'crop_zone_2'
 
     ocr_finished = time.perf_counter()
-    confidences = []
 
-    if lines:
-        confidences = [1.0 for _ in lines]
+    apellidos, nombres = _extract_name_parts(zone_1_lines)
+    apellidos = _sanitize_apellidos(apellidos)
+    nombres = _sanitize_nombres(nombres)
 
-    cedula = cedula_first_pass or _extract_cedula(lines)
-    apellidos, nombres = _extract_name_parts(lines)
     parse_finished = time.perf_counter()
 
-    avg_conf = round(sum(confidences) / len(confidences), 4) if confidences else None
-    return {
+    result = {
         'cedula': cedula,
         'nombres': nombres,
         'apellidos': apellidos,
-        'texto_detectado': lines,
-        'confidence_promedio': avg_conf,
+        'cedula_source': cedula_source,
         'tiempos_ms': {
             'ocr_ms': int((ocr_finished - started) * 1000),
             'parse_ms': int((parse_finished - ocr_finished) * 1000),
             'total_ms': int((parse_finished - started) * 1000),
-            'second_pass_used': not bool(cedula_first_pass),
+            'cedula_fallback_used': cedula_source == 'crop_zone_2',
         },
     }
+
+    if INCLUDE_OCR_DEBUG_TEXT:
+        result['texto_detectado'] = zone_1_lines
+
+    return result
 
 
 def capture_camera250(output_dir: str = "snapshots_camaras") -> dict:
@@ -359,7 +445,9 @@ def capture_camera250(output_dir: str = "snapshots_camaras") -> dict:
 
             # Validar captura exitosa
             if result.returncode == 0 and os.path.exists(output_file) and os.path.getsize(output_file) >= MIN_VALID_IMAGE_BYTES:
-                _recortar_imagen_cedula(output_file)
+                crop_started = time.perf_counter()
+                crop_ok = _recortar_imagen_cedula(output_file)
+                crop_ms = int((time.perf_counter() - crop_started) * 1000)
                 file_size = os.path.getsize(output_file)
                 capture_ms = int((time.perf_counter() - capture_started) * 1000)
 
@@ -373,6 +461,13 @@ def capture_camera250(output_dir: str = "snapshots_camaras") -> dict:
                 except Exception as ocr_exc:
                     ocr_error = str(ocr_exc)
 
+                ocr_boxes_preview = None
+                if DRAW_OCR_BOXES:
+                    ocr_boxes_preview = _dibujar_cuadros_ocr(
+                        output_file,
+                        ocr_data.get('cedula_source') if isinstance(ocr_data, dict) else None,
+                    )
+
                 total_pipeline_ms = int((time.perf_counter() - overall_started) * 1000)
 
                 return {
@@ -385,10 +480,17 @@ def capture_camera250(output_dir: str = "snapshots_camaras") -> dict:
                     'ocr_error': ocr_error,
                     'timings': {
                         'capture_ms': capture_ms,
+                        'crop_ms': crop_ms,
+                        'crop_ok': crop_ok,
                         'ocr_ms': ocr_ms,
                         'total_pipeline_ms': total_pipeline_ms,
                     }
                 }
+
+                if ocr_boxes_preview is not None:
+                    response['ocr_boxes_preview'] = ocr_boxes_preview
+
+                return response
 
             if os.path.exists(output_file):
                 size_bytes = os.path.getsize(output_file)

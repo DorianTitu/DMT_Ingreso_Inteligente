@@ -105,7 +105,7 @@ def build_capture_response(result: dict, error_prefix: str) -> JSONResponse:
             "camera": result['camera'],
             "ip": result['ip'],
             "file": captured_file,
-            "temp_file_removed": temp_file_removed,
+            "temp_file_removed": temp_file_removed, 
             "size_bytes": result['size'],
             "image_base64": image_base64,
             "ocr_data": result.get('ocr_data'),
