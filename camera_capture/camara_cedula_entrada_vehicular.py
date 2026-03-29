@@ -21,7 +21,7 @@ except Exception as exc:
     easyocr = None
     OCR_IMPORT_ERROR = str(exc)
 
-MIN_VALID_IMAGE_BYTES = 20000
+MIN_VALID_IMAGE_BYTES = 9000
 OCR_LANGS = ['es']
 _OCR_READER = None
 FAST_OCR_MODE = True
@@ -65,16 +65,28 @@ NOISE_NAME_KEYS = {
 # intentar en CROP_ZONE_2_PCT.
 CROP_ZONE_1_PCT = (0.33, 0.33, 0.98, 0.01)
 CROP_ZONE_2_PCT = (0.0, 0.80, 0.33, 0.65)
+CAPTURE_TRANSPORT_ORDER = ('udp', 'tcp')
+CAMERA_CHANNEL = 1
+CAMERA_SUBTYPE = 0
+RTSP_PROBE_SIZE = '32768'
+RTSP_ANALYZE_DURATION = '200000'
 
 
 def _build_ffmpeg_cmd(rtsp_url: str, output_file: str, transport: str) -> list[str]:
     """Arma comando ffmpeg para extraer un frame estable desde RTSP."""
     return [
         get_ffmpeg_path(),
+        '-nostdin',
+        '-hide_banner',
+        '-loglevel', 'error',
+        '-probesize', RTSP_PROBE_SIZE,
+        '-analyzeduration', RTSP_ANALYZE_DURATION,
         '-rtsp_transport', transport,
         '-i', rtsp_url,
+        '-map', '0:v:0',
+        '-vf', 'scale=trunc(iw*sar):ih,setsar=1',
         '-vframes', '1',
-        '-q:v', '5',
+        '-q:v', '3',
         '-y',
         output_file,
     ]
@@ -96,6 +108,24 @@ def _recortar_imagen_cedula(ruta_imagen: str) -> bool:
         return True
     except Exception:
         return False
+
+
+def _is_valid_capture_file(file_path: str, min_bytes: int = MIN_VALID_IMAGE_BYTES) -> tuple[bool, str | None]:
+    """Valida tamaño minimo y consistencia basica del JPG capturado."""
+    if not os.path.exists(file_path):
+        return False, 'archivo no generado'
+
+    size_bytes = os.path.getsize(file_path)
+    if size_bytes < min_bytes:
+        return False, f'captura invalida (size={size_bytes} bytes, min={min_bytes})'
+
+    try:
+        with Image.open(file_path) as img:
+            img.verify()
+    except Exception as exc:
+        return False, f'captura invalida (jpg corrupto: {exc})'
+
+    return True, None
 
 
 def _rect_pct_to_pixels(size: tuple[int, int], rect_pct: tuple[float, float, float, float]) -> tuple[int, int, int, int]:
@@ -374,6 +404,10 @@ def warmup_cedula_ocr_reader() -> None:
 def extract_cedula_data_from_image(image_path: str) -> dict:
     """Ejecuta OCR sobre la imagen de cédula y extrae cédula, nombres y apellidos."""
     started = time.perf_counter()
+    crop_started = time.perf_counter()
+    crop_ok = _recortar_imagen_cedula(image_path)
+    crop_finished = time.perf_counter()
+
     reader = _get_ocr_reader()
     image = Image.open(image_path)
     width, height = image.size
@@ -383,6 +417,8 @@ def extract_cedula_data_from_image(image_path: str) -> dict:
 
     crop_zone_1 = image.crop(crop_zone_1_px)
     crop_zone_2 = image.crop(crop_zone_2_px)
+
+    ocr_started = time.perf_counter()
 
     # Una sola lectura pesada para nombres/apellidos (zona 1).
     zone_1_lines = _ocr_lines(reader, _preprocess_image_for_ocr(crop_zone_1))
@@ -415,7 +451,9 @@ def extract_cedula_data_from_image(image_path: str) -> dict:
         'apellidos': apellidos,
         'cedula_source': cedula_source,
         'tiempos_ms': {
-            'ocr_ms': int((ocr_finished - started) * 1000),
+            'crop_ms': int((crop_finished - crop_started) * 1000),
+            'crop_ok': crop_ok,
+            'ocr_ms': int((ocr_finished - ocr_started) * 1000),
             'parse_ms': int((parse_finished - ocr_finished) * 1000),
             'total_ms': int((parse_finished - started) * 1000),
             'cedula_fallback_used': cedula_source == 'crop_zone_2',
@@ -428,7 +466,7 @@ def extract_cedula_data_from_image(image_path: str) -> dict:
     return result
 
 
-def capture_camera250(output_dir: str = "snapshots_camaras") -> dict:
+def capture_camera250(output_dir: str = "snapshots_camaras", do_ocr: bool = True) -> dict:
     """
     Captura foto de Camera250 (cedula entrada vehicular)
     
@@ -442,7 +480,10 @@ def capture_camera250(output_dir: str = "snapshots_camaras") -> dict:
     ip = "192.168.1.250"
     user = "admin"
     password = "DMT_1990"
-    rtsp_url = f"rtsp://{user}:{password}@{ip}:554/"
+    rtsp_url = (
+        f"rtsp://{user}:{password}@{ip}:554/"
+        f"cam/realmonitor?channel={CAMERA_CHANNEL}&subtype={CAMERA_SUBTYPE}"
+    )
     
     # Crear directorio si no existe
     os.makedirs(output_dir, exist_ok=True)
@@ -453,28 +494,36 @@ def capture_camera250(output_dir: str = "snapshots_camaras") -> dict:
     
     try:
         errors = []
-        for transport in ('tcp', 'udp'):
+
+        for transport in CAPTURE_TRANSPORT_ORDER:
             capture_started = time.perf_counter()
             cmd = _build_ffmpeg_cmd(rtsp_url, output_file, transport)
-            result = subprocess.run(cmd, capture_output=True, timeout=15)
+            result = subprocess.run(cmd, capture_output=True, timeout=10)
 
             # Validar captura exitosa
-            if result.returncode == 0 and os.path.exists(output_file) and os.path.getsize(output_file) >= MIN_VALID_IMAGE_BYTES:
-                crop_started = time.perf_counter()
-                crop_ok = _recortar_imagen_cedula(output_file)
-                crop_ms = int((time.perf_counter() - crop_started) * 1000)
+            if result.returncode == 0 and os.path.exists(output_file):
+                is_valid_capture, invalid_reason = _is_valid_capture_file(output_file)
+            else:
+                is_valid_capture, invalid_reason = False, None
+
+            if is_valid_capture:
                 file_size = os.path.getsize(output_file)
                 capture_ms = int((time.perf_counter() - capture_started) * 1000)
 
                 ocr_data = None
                 ocr_error = None
                 ocr_ms = None
-                try:
-                    ocr_data = extract_cedula_data_from_image(output_file)
-                    if ocr_data and isinstance(ocr_data.get('tiempos_ms'), dict):
-                        ocr_ms = ocr_data['tiempos_ms'].get('ocr_ms')
-                except Exception as ocr_exc:
-                    ocr_error = str(ocr_exc)
+                crop_ms = None
+                crop_ok = None
+                if do_ocr:
+                    try:
+                        ocr_data = extract_cedula_data_from_image(output_file)
+                        if ocr_data and isinstance(ocr_data.get('tiempos_ms'), dict):
+                            ocr_ms = ocr_data['tiempos_ms'].get('ocr_ms')
+                            crop_ms = ocr_data['tiempos_ms'].get('crop_ms')
+                            crop_ok = ocr_data['tiempos_ms'].get('crop_ok')
+                    except Exception as ocr_exc:
+                        ocr_error = str(ocr_exc)
 
                 ocr_boxes_preview = None
                 if DRAW_OCR_BOXES:
@@ -485,7 +534,7 @@ def capture_camera250(output_dir: str = "snapshots_camaras") -> dict:
 
                 total_pipeline_ms = int((time.perf_counter() - overall_started) * 1000)
 
-                return {
+                response = {
                     'success': True,
                     'file': output_file,
                     'size': file_size,
@@ -495,6 +544,7 @@ def capture_camera250(output_dir: str = "snapshots_camaras") -> dict:
                     'ocr_error': ocr_error,
                     'timings': {
                         'capture_ms': capture_ms,
+                        'capture_method': f'rtsp_{transport}',
                         'crop_ms': crop_ms,
                         'crop_ok': crop_ok,
                         'ocr_ms': ocr_ms,
@@ -508,8 +558,11 @@ def capture_camera250(output_dir: str = "snapshots_camaras") -> dict:
                 return response
 
             if os.path.exists(output_file):
-                size_bytes = os.path.getsize(output_file)
-                errors.append(f"{transport.upper()}: captura invalida (size={size_bytes} bytes)")
+                if invalid_reason:
+                    errors.append(f"{transport.upper()}: {invalid_reason}")
+                else:
+                    size_bytes = os.path.getsize(output_file)
+                    errors.append(f"{transport.upper()}: captura invalida (size={size_bytes} bytes)")
             else:
                 errors.append(f"{transport.upper()}: {format_ffmpeg_error(result.returncode, result.stderr)}")
 

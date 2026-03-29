@@ -11,6 +11,8 @@ import os
 import base64
 import sys
 import tempfile
+import binascii
+import time
 from dotenv import load_dotenv
 
 # Cargar variables de entorno desde .env
@@ -21,7 +23,10 @@ from camera_capture import (
     capture_camera3, 
     capture_camera250
 )
-from camera_capture.camara_cedula_entrada_vehicular import warmup_cedula_ocr_reader
+from camera_capture.camara_cedula_entrada_vehicular import (
+    warmup_cedula_ocr_reader,
+    extract_cedula_data_from_image,
+)
 
 # Agregar el directorio padre al path para importar registro_vehicular
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -71,6 +76,11 @@ class HoraSalidaRequest(BaseModel):
     ticket: str
     hora_salida: Optional[str] = None
 
+
+class CedulaOCRRequest(BaseModel):
+    """Modelo para extraer datos OCR desde una imagen de cédula en base64."""
+    imagen_cedula_base64: str
+
 # ============ FUNCIONES AUXILIARES ============
 
 def image_to_base64(file_path: str) -> str:
@@ -105,15 +115,63 @@ def build_capture_response(result: dict, error_prefix: str) -> JSONResponse:
             "camera": result['camera'],
             "ip": result['ip'],
             "file": captured_file,
-            "temp_file_removed": temp_file_removed, 
+            "temp_file_removed": temp_file_removed,
             "size_bytes": result['size'],
             "image_base64": image_base64,
+            "image_data_url": f"data:image/jpeg;base64,{image_base64}",
             "ocr_data": result.get('ocr_data'),
             "ocr_error": result.get('ocr_error'),
             "timings": result.get('timings'),
             "message": "Captura exitosa"
         }
     )
+
+
+def base64_to_temp_image(base64_data: str, prefix: str = "cedula_ocr_") -> str:
+    """Decodifica una imagen base64 y la guarda en un archivo temporal JPG."""
+    # Soporta payloads tipo "data:image/jpeg;base64,..."
+    clean_data = base64_data.split(',', 1)[1] if ',' in base64_data else base64_data
+    try:
+        image_bytes = base64.b64decode(clean_data, validate=True)
+    except (binascii.Error, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=f"Base64 invalido: {exc}")
+
+    if not image_bytes:
+        raise HTTPException(status_code=400, detail="La imagen base64 esta vacia")
+
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
+    temp_file = tempfile.NamedTemporaryFile(prefix=prefix, suffix=".jpg", dir=OUTPUT_DIR, delete=False)
+    try:
+        temp_file.write(image_bytes)
+        temp_file.flush()
+        return temp_file.name
+    finally:
+        temp_file.close()
+
+
+def process_cedula_from_base64(base64_data: str) -> dict:
+    """Procesa OCR desde base64 y retorna resultado uniforme."""
+    started = time.perf_counter()
+    temp_image_path = base64_to_temp_image(base64_data)
+
+    try:
+        ocr_data = extract_cedula_data_from_image(temp_image_path)
+        total_ms = int((time.perf_counter() - started) * 1000)
+        return {
+            "success": True,
+            "ocr_data": ocr_data,
+            "timings": {
+                "endpoint_total_ms": total_ms
+            },
+            "message": "Extraccion OCR exitosa"
+        }
+    finally:
+        if temp_image_path and os.path.exists(temp_image_path):
+            try:
+                os.remove(temp_image_path)
+            except OSError:
+                pass
+
 
 @app.on_event("startup")
 async def startup_event():
@@ -146,7 +204,8 @@ async def root():
             "capture": {
                 "/capture/camara_placa_entrada_vehicular": "Capturar imagen de Camera1",
                 "/capture/camara_usuario_entrada_vehicular": "Capturar imagen de Camera3",
-                "/capture/camara_cedula_entrada_vehicular": "Capturar imagen de Camera250"
+                "/capture/camara_cedula_entrada_vehicular": "Capturar imagen de Camera250 (solo captura)",
+                "/extract/camara_cedula_entrada_vehicular": "Extraer datos OCR de una imagen base64"
             },
             "registro": {
                 "/save/registro_vehicular": "Guardar registro completo de ingreso vehicular",
@@ -188,12 +247,28 @@ async def capture_camera3_endpoint():
 @app.post("/capture/camara_cedula_entrada_vehicular")
 async def capture_cedula_endpoint():
     """
-    Captura imagen de la cédula
+    Captura imagen de la cédula (sin OCR)
     - Captura desde Camera250 (cédula entrada vehicular)
     - Retorna imagen en base64
     """
-    result = capture_camera250(OUTPUT_DIR)
+    result = capture_camera250(OUTPUT_DIR, do_ocr=False)
     return build_capture_response(result, "Error en captura")
+
+
+@app.post("/extract/camara_cedula_entrada_vehicular")
+async def extract_cedula_data_endpoint(payload: CedulaOCRRequest):
+    """
+    Extrae datos OCR de una imagen de cédula enviada en base64.
+    - Entrada: imagen_cedula_base64
+    - Salida: cedula, nombres, apellidos y tiempos de OCR
+    """
+    try:
+        result = process_cedula_from_base64(payload.imagen_cedula_base64)
+        return JSONResponse(status_code=200, content=result)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Error en OCR: {exc}")
 
 @app.post("/save/registro_vehicular")
 async def save_registro_vehicular(registro: RegistroVehicularRequest):
