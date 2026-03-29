@@ -429,6 +429,85 @@ class RegistroVehicular:
                 'tickets': [],
             }
 
+    def _buscar_carpeta_ticket(self, codigo_ticket: str) -> Optional[Path]:
+        """Busca la carpeta física asociada a un ticket."""
+        if not codigo_ticket:
+            return None
+
+        rutas_raiz = [self.ruta_base / str(self.año_actual), self.ruta_base]
+        for raiz in rutas_raiz:
+            if not raiz.exists():
+                continue
+
+            for ruta in raiz.rglob(codigo_ticket):
+                if ruta.is_dir() and ruta.name.upper() == codigo_ticket:
+                    return ruta
+
+        return None
+
+    def obtener_fotos_por_ticket(self, ticket_ref: str) -> Dict:
+        """
+        Recupera imágenes asociadas a un ticket y las retorna en base64.
+
+        Args:
+            ticket_ref: Número (ej: 1) o código (ej: TICKET_000001)
+
+        Returns:
+            dict con imágenes encontradas y faltantes.
+        """
+        try:
+            codigo_ticket = self._normalizar_codigo_ticket(ticket_ref)
+            if not codigo_ticket:
+                return {
+                    'success': False,
+                    'error': 'Ticket inválido'
+                }
+
+            carpeta_ticket = self._buscar_carpeta_ticket(codigo_ticket)
+            if carpeta_ticket is None:
+                return {
+                    'success': False,
+                    'error': f'No se encontró carpeta para el ticket {codigo_ticket}'
+                }
+
+            archivos_esperados = {
+                'cedula': 'cedula.jpg',
+                'usuario': 'usuario.jpg',
+                'placa': 'placa.jpg',
+            }
+
+            fotos = {}
+            faltantes = []
+            for clave, nombre_archivo in archivos_esperados.items():
+                ruta_archivo = carpeta_ticket / nombre_archivo
+                if not ruta_archivo.exists() or not ruta_archivo.is_file():
+                    faltantes.append(nombre_archivo)
+                    continue
+
+                with open(ruta_archivo, 'rb') as image_file:
+                    contenido = image_file.read()
+
+                fotos[clave] = {
+                    'archivo': nombre_archivo,
+                    'size_bytes': len(contenido),
+                    'image_base64': base64.b64encode(contenido).decode('utf-8')
+                }
+
+            return {
+                'success': True,
+                'ticket': codigo_ticket,
+                'ruta_ticket': str(carpeta_ticket),
+                'total_fotos': len(fotos),
+                'faltantes': faltantes,
+                'fotos': fotos,
+            }
+
+        except Exception as e:
+            return {
+                'success': False,
+                'error': str(e)
+            }
+
 
 # Instancia global (se inicializará en la API)
 registro_manager = None

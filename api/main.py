@@ -151,6 +151,7 @@ async def root():
             "registro": {
                 "/save/registro_vehicular": "Guardar registro completo de ingreso vehicular",
                 "/get/registro_vehicular": "Listar todos los tickets desde el Excel",
+                "/get/fotos_ticket/{ticket}": "Obtener fotos guardadas por ticket",
                 "/update/hora_salida": "Actualizar hora de salida por ticket"
             },
             "salud": {
@@ -282,6 +283,24 @@ async def get_registro_vehicular():
             'tickets': resultado.get('tickets', []),
         }
     )
+
+
+@app.get("/get/fotos_ticket/{ticket}")
+async def get_fotos_ticket(ticket: str):
+    """Obtiene las fotos guardadas (cedula/usuario/placa) para un ticket."""
+    if registro_vehicular.registro_manager is None:
+        raise HTTPException(
+            status_code=500,
+            detail="El sistema de registro no está inicializado"
+        )
+
+    resultado = registro_vehicular.registro_manager.obtener_fotos_por_ticket(ticket)
+    if not resultado.get('success'):
+        detalle = resultado.get('error', 'Desconocido')
+        status_code = 404 if 'No se encontró carpeta' in detalle else 400
+        raise HTTPException(status_code=status_code, detail=detalle)
+
+    return JSONResponse(status_code=200, content=resultado)
 
 
 @app.post("/update/hora_salida")
