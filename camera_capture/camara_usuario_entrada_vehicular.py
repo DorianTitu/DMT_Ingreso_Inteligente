@@ -1,39 +1,16 @@
 """
-Captura de Camera3 (192.168.1.223)
-Protocolo: RTSP
-Modelo: Dahua DS-K8003-IME1(B)
+Captura de camara usuario entrada vehicular (192.168.1.224)
+Protocolo: HTTP con autenticacion Digest
 """
 
-import subprocess
 import os
 from datetime import datetime
-from .runtime_helpers import get_ffmpeg_path, format_ffmpeg_error
 
-CAPTURE_TRANSPORT_ORDER = ('udp', 'tcp')
-CAMERA_CHANNEL = 1
-CAMERA_SUBTYPE = 0
-RTSP_PROBE_SIZE = '32768'
-RTSP_ANALYZE_DURATION = '200000'
+import requests
+from requests.auth import HTTPDigestAuth
 
-
-def _build_ffmpeg_cmd(rtsp_url: str, output_file: str, transport: str) -> list[str]:
-    """Arma comando ffmpeg estable para capturar un frame."""
-    return [
-        get_ffmpeg_path(),
-        '-nostdin',
-        '-hide_banner',
-        '-loglevel', 'error',
-        '-probesize', RTSP_PROBE_SIZE,
-        '-analyzeduration', RTSP_ANALYZE_DURATION,
-        '-rtsp_transport', transport,
-        '-i', rtsp_url,
-        '-map', '0:v:0',
-        '-vf', 'scale=trunc(iw*sar):ih,setsar=1',
-        '-vframes', '1',
-        '-q:v', '3',
-        '-y',
-        output_file,
-    ]
+SESSION = requests.Session()
+SESSION.headers.update({"Connection": "keep-alive"})
 
 def capture_camera3(output_dir: str = "snapshots_camaras") -> dict:
     """
@@ -45,14 +22,10 @@ def capture_camera3(output_dir: str = "snapshots_camaras") -> dict:
     Returns:
         dict con estado de la captura {'success': bool, 'file': str, 'size': int}
     """
-    # Configuración
-    ip = "192.168.1.223"
+    ip = "192.168.1.224"
     user = "admin"
-    password = "DMT_1990"
-    rtsp_url = (
-        f"rtsp://{user}:{password}@{ip}:554/"
-        f"cam/realmonitor?channel={CAMERA_CHANNEL}&subtype={CAMERA_SUBTYPE}"
-    )
+    password = "dmt_2390"
+    url = f"http://{ip}/cgi-bin/snapshot.cgi"
     
     # Crear directorio si no existe
     os.makedirs(output_dir, exist_ok=True)
@@ -61,45 +34,49 @@ def capture_camera3(output_dir: str = "snapshots_camaras") -> dict:
     output_file = os.path.join(output_dir, f"camara_usuario_entrada_vehicular_{timestamp}.jpg")
     
     try:
-        errors = []
-        for transport in CAPTURE_TRANSPORT_ORDER:
-            cmd = _build_ffmpeg_cmd(rtsp_url, output_file, transport)
-            result = subprocess.run(cmd, capture_output=True, timeout=10)
+        response = SESSION.get(
+            url,
+            auth=HTTPDigestAuth(user, password),
+            timeout=(2, 6),
+            stream=False,
+        )
 
-            # Validar captura exitosa
-            if result.returncode == 0 and os.path.exists(output_file) and os.path.getsize(output_file) > 0:
-                file_size = os.path.getsize(output_file)
-                return {
-                    'success': True,
-                    'file': output_file,
-                    'size': file_size,
-                    'camera': 'Camera3 (Usuario)',
-                    'ip': ip
-                }
+        if response.status_code == 200 and len(response.content) > 1000:
+            with open(output_file, 'wb') as f:
+                f.write(response.content)
 
-            if os.path.exists(output_file):
-                size_bytes = os.path.getsize(output_file)
-                os.remove(output_file)
-                errors.append(f"{transport.upper()}: captura invalida (size={size_bytes} bytes)")
-            else:
-                errors.append(f"{transport.upper()}: {format_ffmpeg_error(result.returncode, result.stderr)}")
+            file_size = os.path.getsize(output_file)
+            return {
+                'success': True,
+                'file': output_file,
+                'size': file_size,
+                'camera': 'Camara Usuario Entrada Vehicular',
+                'ip': ip
+            }
 
         return {
             'success': False,
             'file': None,
             'size': None,
-            'camera': 'Camera3 (Usuario)',
+            'camera': 'Camara Usuario Entrada Vehicular',
             'ip': ip,
-            'error': ' | '.join(errors)
+            'error': f'HTTP code: {response.status_code}'
         }
-    except subprocess.TimeoutExpired:
-        if os.path.exists(output_file):
-            os.remove(output_file)
+    except requests.ConnectTimeout:
         return {
             'success': False,
             'file': None,
             'size': None,
-            'camera': 'Camera3 (Usuario)',
+            'camera': 'Camara Usuario Entrada Vehicular',
+            'ip': ip,
+            'error': 'Connection timeout - Camera unreachable'
+        }
+    except requests.Timeout:
+        return {
+            'success': False,
+            'file': None,
+            'size': None,
+            'camera': 'Camara Usuario Entrada Vehicular',
             'ip': ip,
             'error': 'Timeout'
         }
@@ -110,7 +87,7 @@ def capture_camera3(output_dir: str = "snapshots_camaras") -> dict:
             'success': False,
             'file': None,
             'size': None,
-            'camera': 'Camera3 (Usuario)',
+            'camera': 'Camara Usuario Entrada Vehicular',
             'ip': ip,
             'error': str(e)
         }

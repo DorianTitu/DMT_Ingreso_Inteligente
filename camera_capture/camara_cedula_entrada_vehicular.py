@@ -27,13 +27,13 @@ _OCR_READER = None
 FAST_OCR_MODE = True
 OCR_PROFILE = 'ULTRAFAST'
 if OCR_PROFILE == 'ULTRAFAST':
-    MAX_OCR_IMAGE_WIDTH = 560
-    OCR_CANVAS_SIZE = 800
+    MAX_OCR_IMAGE_WIDTH = 500
+    OCR_CANVAS_SIZE = 700
     OCR_BATCH_SIZE = 2
     OCR_MIN_SIZE = 20
-    OCR_TEXT_THRESHOLD = 0.55
-    OCR_LOW_TEXT = 0.35
-    OCR_LINK_THRESHOLD = 0.35
+    OCR_TEXT_THRESHOLD = 0.60
+    OCR_LOW_TEXT = 0.40
+    OCR_LINK_THRESHOLD = 0.40
 else:
     MAX_OCR_IMAGE_WIDTH = 650
     OCR_CANVAS_SIZE = 960
@@ -108,6 +108,16 @@ def _recortar_imagen_cedula(ruta_imagen: str) -> bool:
         return True
     except Exception:
         return False
+
+
+def _recortar_imagen_cedula_obj(image: Image.Image) -> Image.Image:
+    """Recorta márgenes de cédula en memoria para evitar I/O de disco."""
+    width, height = image.size
+    top = int(height * 0.12)
+    left = int(width * 0.2)
+    right = width
+    bottom = height
+    return image.crop((left, top, right, bottom))
 
 
 def _is_valid_capture_file(file_path: str, min_bytes: int = MIN_VALID_IMAGE_BYTES) -> tuple[bool, str | None]:
@@ -301,8 +311,8 @@ def _get_ocr_reader():
         try:
             import torch
             cpu_count = os.cpu_count() or 8
-            # Usa casi todos los hilos lógicos para maximizar throughput en CPU.
-            torch.set_num_threads(max(2, cpu_count - 1))
+            # Limita hilos para reducir overhead y mejorar latencia por request.
+            torch.set_num_threads(max(2, min(6, cpu_count - 1)))
             torch.set_num_interop_threads(1)
         except Exception:
             pass
@@ -401,15 +411,18 @@ def warmup_cedula_ocr_reader() -> None:
     _get_ocr_reader()
 
 
-def extract_cedula_data_from_image(image_path: str) -> dict:
-    """Ejecuta OCR sobre la imagen de cédula y extrae cédula, nombres y apellidos."""
+def extract_cedula_data_from_pil(image: Image.Image) -> dict:
+    """Ejecuta OCR sobre una imagen PIL y extrae cédula, nombres y apellidos."""
     started = time.perf_counter()
     crop_started = time.perf_counter()
-    crop_ok = _recortar_imagen_cedula(image_path)
+    try:
+        image = _recortar_imagen_cedula_obj(image)
+        crop_ok = True
+    except Exception:
+        crop_ok = False
     crop_finished = time.perf_counter()
 
     reader = _get_ocr_reader()
-    image = Image.open(image_path)
     width, height = image.size
 
     crop_zone_1_px = _rect_pct_to_pixels((width, height), CROP_ZONE_1_PCT)
@@ -464,6 +477,20 @@ def extract_cedula_data_from_image(image_path: str) -> dict:
         result['texto_detectado'] = zone_1_lines
 
     return result
+
+
+def extract_cedula_data_from_image(image_path: str) -> dict:
+    """Ejecuta OCR sobre la imagen de cédula y extrae cédula, nombres y apellidos."""
+    with Image.open(image_path) as image:
+        return extract_cedula_data_from_pil(image.copy())
+
+
+def extract_cedula_data_from_bytes(image_bytes: bytes) -> dict:
+    """Ejecuta OCR sobre bytes de imagen para evitar archivos temporales."""
+    from io import BytesIO
+
+    with Image.open(BytesIO(image_bytes)) as image:
+        return extract_cedula_data_from_pil(image.copy())
 
 
 def capture_camera250(output_dir: str = "snapshots_camaras", do_ocr: bool = True) -> dict:

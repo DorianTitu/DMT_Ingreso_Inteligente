@@ -21,11 +21,12 @@ load_dotenv()
 from camera_capture import (
     capture_camera1, 
     capture_camera3, 
-    capture_camera250
+    capture_camera250,
+    capture_cedula_entrada_peatonal,
 )
 from camera_capture.camara_cedula_entrada_vehicular import (
     warmup_cedula_ocr_reader,
-    extract_cedula_data_from_image,
+    extract_cedula_data_from_bytes,
 )
 
 # Agregar el directorio padre al path para importar registro_vehicular
@@ -89,7 +90,7 @@ def image_to_base64(file_path: str) -> str:
         return base64.b64encode(image_file.read()).decode('utf-8')
 
 
-def build_capture_response(result: dict, error_prefix: str) -> JSONResponse:
+def build_capture_response(result: dict, error_prefix: str, include_data_url: bool = False) -> JSONResponse:
     """Arma una respuesta uniforme para todos los endpoints de captura."""
     if not result.get('success'):
         raise HTTPException(
@@ -97,8 +98,12 @@ def build_capture_response(result: dict, error_prefix: str) -> JSONResponse:
             detail=f"{error_prefix}: {result.get('error', 'Desconocido')}"
         )
 
+    started = time.perf_counter()
     captured_file = result['file']
+    encode_start = time.perf_counter()
     image_base64 = image_to_base64(captured_file)
+    encode_ms = int((time.perf_counter() - encode_start) * 1000)
+    image_data_url = f"data:image/jpeg;base64,{image_base64}" if include_data_url else None
 
     temp_file_removed = False
     if captured_file and os.path.exists(captured_file):
@@ -107,6 +112,8 @@ def build_capture_response(result: dict, error_prefix: str) -> JSONResponse:
             temp_file_removed = True
         except OSError:
             temp_file_removed = False
+
+    total_ms = int((time.perf_counter() - started) * 1000)
 
     return JSONResponse(
         status_code=200,
@@ -118,18 +125,22 @@ def build_capture_response(result: dict, error_prefix: str) -> JSONResponse:
             "temp_file_removed": temp_file_removed,
             "size_bytes": result['size'],
             "image_base64": image_base64,
-            "image_data_url": f"data:image/jpeg;base64,{image_base64}",
+            "image_data_url": image_data_url,
             "ocr_data": result.get('ocr_data'),
             "ocr_error": result.get('ocr_error'),
-            "timings": result.get('timings'),
+            "timings": {
+                **(result.get('timings') or {}),
+                "api_base64_encode_ms": encode_ms,
+                "api_response_total_ms": total_ms,
+            },
             "message": "Captura exitosa"
         }
     )
 
 
-def base64_to_temp_image(base64_data: str, prefix: str = "cedula_ocr_") -> str:
-    """Decodifica una imagen base64 y la guarda en un archivo temporal JPG."""
-    # Soporta payloads tipo "data:image/jpeg;base64,..."
+def process_cedula_from_base64(base64_data: str) -> dict:
+    """Procesa OCR desde base64 y retorna resultado uniforme."""
+    started = time.perf_counter()
     clean_data = base64_data.split(',', 1)[1] if ',' in base64_data else base64_data
     try:
         image_bytes = base64.b64decode(clean_data, validate=True)
@@ -139,38 +150,16 @@ def base64_to_temp_image(base64_data: str, prefix: str = "cedula_ocr_") -> str:
     if not image_bytes:
         raise HTTPException(status_code=400, detail="La imagen base64 esta vacia")
 
-    os.makedirs(OUTPUT_DIR, exist_ok=True)
-    temp_file = tempfile.NamedTemporaryFile(prefix=prefix, suffix=".jpg", dir=OUTPUT_DIR, delete=False)
-    try:
-        temp_file.write(image_bytes)
-        temp_file.flush()
-        return temp_file.name
-    finally:
-        temp_file.close()
-
-
-def process_cedula_from_base64(base64_data: str) -> dict:
-    """Procesa OCR desde base64 y retorna resultado uniforme."""
-    started = time.perf_counter()
-    temp_image_path = base64_to_temp_image(base64_data)
-
-    try:
-        ocr_data = extract_cedula_data_from_image(temp_image_path)
-        total_ms = int((time.perf_counter() - started) * 1000)
-        return {
-            "success": True,
-            "ocr_data": ocr_data,
-            "timings": {
-                "endpoint_total_ms": total_ms
-            },
-            "message": "Extraccion OCR exitosa"
-        }
-    finally:
-        if temp_image_path and os.path.exists(temp_image_path):
-            try:
-                os.remove(temp_image_path)
-            except OSError:
-                pass
+    ocr_data = extract_cedula_data_from_bytes(image_bytes)
+    total_ms = int((time.perf_counter() - started) * 1000)
+    return {
+        "success": True,
+        "ocr_data": ocr_data,
+        "timings": {
+            "endpoint_total_ms": total_ms
+        },
+        "message": "Extraccion OCR exitosa"
+    }
 
 
 @app.on_event("startup")
@@ -205,6 +194,8 @@ async def root():
                 "/capture/camara_placa_entrada_vehicular": "Capturar imagen de Camera1",
                 "/capture/camara_usuario_entrada_vehicular": "Capturar imagen de Camera3",
                 "/capture/camara_cedula_entrada_vehicular": "Capturar imagen de Camera250 (solo captura)",
+                "/capture/camara_cedula_entrada_peatonal": "Capturar imagen de camara cedula entrada peatonal",
+                "/capture/camara_usuario_entrada_peatonal": "Alias de camara cedula entrada peatonal",
                 "/extract/camara_cedula_entrada_vehicular": "Extraer datos OCR de una imagen base64"
             },
             "registro": {
@@ -225,34 +216,55 @@ async def health():
     return {"status": "OK", "message": "API funcionando correctamente"}
 
 @app.post("/capture/camara_placa_entrada_vehicular")
-async def capture_camera1_endpoint():
+async def capture_camera1_endpoint(include_data_url: bool = False):
     """
     Captura imagen de Camera1 (192.168.1.108)
     Protocolo: HTTP Digest
     Descripción: Placa entrada vehicular
     """
     result = capture_camera1(OUTPUT_DIR)
-    return build_capture_response(result, f"Error al capturar imagen de {result.get('camera', 'Camera1 (Placa)')}")
+    return build_capture_response(result, f"Error al capturar imagen de {result.get('camera', 'Camera1 (Placa)')}", include_data_url)
 
 @app.post("/capture/camara_usuario_entrada_vehicular")
-async def capture_camera3_endpoint():
+async def capture_camera3_endpoint(include_data_url: bool = False):
     """
     Captura imagen de Camera3 (192.168.1.223)
     Protocolo: RTSP
     Descripción: Usuario entrada vehicular
     """
     result = capture_camera3(OUTPUT_DIR)
-    return build_capture_response(result, f"Error al capturar imagen de {result.get('camera', 'Camera3 (Usuario)')}")
+    return build_capture_response(result, f"Error al capturar imagen de {result.get('camera', 'Camera3 (Usuario)')}", include_data_url)
 
 @app.post("/capture/camara_cedula_entrada_vehicular")
-async def capture_cedula_endpoint():
+async def capture_cedula_endpoint(include_data_url: bool = False):
     """
     Captura imagen de la cédula (sin OCR)
     - Captura desde Camera250 (cédula entrada vehicular)
     - Retorna imagen en base64
     """
     result = capture_camera250(OUTPUT_DIR, do_ocr=False)
-    return build_capture_response(result, "Error en captura")
+    return build_capture_response(result, "Error en captura", include_data_url)
+
+
+@app.post("/capture/camara_cedula_entrada_peatonal")
+async def capture_cedula_peatonal_endpoint(include_data_url: bool = False):
+    """
+    Captura imagen de la camara de cedula entrada peatonal.
+    - IP: 192.168.1.3
+    - Protocolo: HTTP Digest
+    """
+    result = capture_cedula_entrada_peatonal(OUTPUT_DIR)
+    return build_capture_response(result, "Error al capturar imagen de camara cedula entrada peatonal", include_data_url)
+
+
+@app.post("/capture/camara_usuario_entrada_peatonal")
+async def capture_usuario_peatonal_endpoint(include_data_url: bool = False):
+    """
+    Alias para compatibilidad de nombre solicitado.
+    Internamente usa la camara de usuario entrada vehicular (192.168.1.224).
+    """
+    result = capture_camera3(OUTPUT_DIR)
+    return build_capture_response(result, "Error al capturar imagen de camara usuario entrada peatonal", include_data_url)
 
 
 @app.post("/extract/camara_cedula_entrada_vehicular")
