@@ -4,7 +4,7 @@ Endpoints para capturar imágenes de las 3 cámaras y guardar registros
 """
 
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel
 from typing import Optional
 import os
@@ -90,7 +90,56 @@ def image_to_base64(file_path: str) -> str:
         return base64.b64encode(image_file.read()).decode('utf-8')
 
 
-def build_capture_response(result: dict, error_prefix: str, include_data_url: bool = False) -> JSONResponse:
+def _extract_image_bytes(result: dict) -> bytes:
+    """Obtiene bytes de imagen desde memoria o desde archivo temporal."""
+    image_bytes = result.get('image_bytes')
+    if isinstance(image_bytes, (bytes, bytearray)) and len(image_bytes) > 0:
+        return bytes(image_bytes)
+
+    captured_file = result.get('file')
+    if not captured_file or not os.path.exists(captured_file):
+        raise HTTPException(status_code=500, detail="No se encontro la imagen capturada")
+
+    with open(captured_file, 'rb') as image_file:
+        return image_file.read()
+
+
+def _cleanup_temp_capture_file(captured_file: str | None) -> bool:
+    if captured_file and os.path.exists(captured_file):
+        try:
+            os.remove(captured_file)
+            return True
+        except OSError:
+            return False
+    return False
+
+
+def build_capture_jpeg_response(result: dict, error_prefix: str) -> Response:
+    """Retorna la imagen como JPEG binario para minimizar latencia de serializacion."""
+    if not result.get('success'):
+        raise HTTPException(
+            status_code=500,
+            detail=f"{error_prefix}: {result.get('error', 'Desconocido')}"
+        )
+
+    image_bytes = _extract_image_bytes(result)
+    captured_file = result.get('file')
+    temp_file_removed = _cleanup_temp_capture_file(captured_file)
+
+    headers = {
+        'X-Camera': str(result.get('camera', '')),
+        'X-Camera-IP': str(result.get('ip', '')),
+        'X-Temp-File-Removed': str(temp_file_removed).lower(),
+    }
+    return Response(content=image_bytes, media_type='image/jpeg', headers=headers)
+
+
+def build_capture_response(
+    result: dict,
+    error_prefix: str,
+    include_data_url: bool = False,
+    include_image: bool = True,
+) -> JSONResponse:
     """Arma una respuesta uniforme para todos los endpoints de captura."""
     if not result.get('success'):
         raise HTTPException(
@@ -100,18 +149,17 @@ def build_capture_response(result: dict, error_prefix: str, include_data_url: bo
 
     started = time.perf_counter()
     captured_file = result['file']
-    encode_start = time.perf_counter()
-    image_base64 = image_to_base64(captured_file)
-    encode_ms = int((time.perf_counter() - encode_start) * 1000)
-    image_data_url = f"data:image/jpeg;base64,{image_base64}" if include_data_url else None
+    image_base64 = None
+    image_data_url = None
+    encode_ms = 0
+    if include_image:
+        image_bytes = _extract_image_bytes(result)
+        encode_start = time.perf_counter()
+        image_base64 = base64.b64encode(image_bytes).decode('utf-8')
+        encode_ms = int((time.perf_counter() - encode_start) * 1000)
+        image_data_url = f"data:image/jpeg;base64,{image_base64}" if include_data_url else None
 
-    temp_file_removed = False
-    if captured_file and os.path.exists(captured_file):
-        try:
-            os.remove(captured_file)
-            temp_file_removed = True
-        except OSError:
-            temp_file_removed = False
+    temp_file_removed = _cleanup_temp_capture_file(captured_file)
 
     total_ms = int((time.perf_counter() - started) * 1000)
 
@@ -126,6 +174,7 @@ def build_capture_response(result: dict, error_prefix: str, include_data_url: bo
             "size_bytes": result['size'],
             "image_base64": image_base64,
             "image_data_url": image_data_url,
+            "crop_boxes": result.get('crop_boxes'),
             "ocr_data": result.get('ocr_data'),
             "ocr_error": result.get('ocr_error'),
             "timings": {
@@ -216,55 +265,68 @@ async def health():
     return {"status": "OK", "message": "API funcionando correctamente"}
 
 @app.post("/capture/camara_placa_entrada_vehicular")
-async def capture_camera1_endpoint(include_data_url: bool = False):
+async def capture_camera1_endpoint(include_data_url: bool = False, include_image: bool = True, response_mode: str = "json"):
     """
     Captura imagen de Camera1 (192.168.1.108)
     Protocolo: HTTP Digest
     Descripción: Placa entrada vehicular
     """
     result = capture_camera1(OUTPUT_DIR)
-    return build_capture_response(result, f"Error al capturar imagen de {result.get('camera', 'Camera1 (Placa)')}", include_data_url)
+    if response_mode.lower() == "jpeg":
+        return build_capture_jpeg_response(result, f"Error al capturar imagen de {result.get('camera', 'Camera1 (Placa)')}")
+    return build_capture_response(result, f"Error al capturar imagen de {result.get('camera', 'Camera1 (Placa)')}", include_data_url, include_image)
 
 @app.post("/capture/camara_usuario_entrada_vehicular")
-async def capture_camera3_endpoint(include_data_url: bool = False):
+async def capture_camera3_endpoint(include_data_url: bool = False, include_image: bool = True, response_mode: str = "json"):
     """
     Captura imagen de Camera3 (192.168.1.223)
     Protocolo: RTSP
     Descripción: Usuario entrada vehicular
     """
-    result = capture_camera3(OUTPUT_DIR)
-    return build_capture_response(result, f"Error al capturar imagen de {result.get('camera', 'Camera3 (Usuario)')}", include_data_url)
+    save_file = response_mode.lower() != "jpeg"
+    result = capture_camera3(OUTPUT_DIR, save_file=save_file)
+    if response_mode.lower() == "jpeg":
+        return build_capture_jpeg_response(result, f"Error al capturar imagen de {result.get('camera', 'Camera3 (Usuario)')}")
+    return build_capture_response(result, f"Error al capturar imagen de {result.get('camera', 'Camera3 (Usuario)')}", include_data_url, include_image)
 
 @app.post("/capture/camara_cedula_entrada_vehicular")
-async def capture_cedula_endpoint(include_data_url: bool = False):
+async def capture_cedula_endpoint(include_data_url: bool = False, include_image: bool = True, response_mode: str = "json"):
     """
     Captura imagen de la cédula (sin OCR)
     - Captura desde Camera250 (cédula entrada vehicular)
     - Retorna imagen en base64
     """
     result = capture_camera250(OUTPUT_DIR, do_ocr=False)
-    return build_capture_response(result, "Error en captura", include_data_url)
+    if response_mode.lower() == "jpeg":
+        return build_capture_jpeg_response(result, "Error en captura")
+    return build_capture_response(result, "Error en captura", include_data_url, include_image)
 
 
 @app.post("/capture/camara_cedula_entrada_peatonal")
-async def capture_cedula_peatonal_endpoint(include_data_url: bool = False):
+async def capture_cedula_peatonal_endpoint(include_data_url: bool = False, include_image: bool = True, response_mode: str = "json"):
     """
     Captura imagen de la camara de cedula entrada peatonal.
     - IP: 192.168.1.3
     - Protocolo: HTTP Digest
     """
-    result = capture_cedula_entrada_peatonal(OUTPUT_DIR)
-    return build_capture_response(result, "Error al capturar imagen de camara cedula entrada peatonal", include_data_url)
+    save_file = response_mode.lower() != "jpeg"
+    result = capture_cedula_entrada_peatonal(OUTPUT_DIR, save_file=save_file)
+    if response_mode.lower() == "jpeg":
+        return build_capture_jpeg_response(result, "Error al capturar imagen de camara cedula entrada peatonal")
+    return build_capture_response(result, "Error al capturar imagen de camara cedula entrada peatonal", include_data_url, include_image)
 
 
 @app.post("/capture/camara_usuario_entrada_peatonal")
-async def capture_usuario_peatonal_endpoint(include_data_url: bool = False):
+async def capture_usuario_peatonal_endpoint(include_data_url: bool = False, include_image: bool = True, response_mode: str = "json"):
     """
     Alias para compatibilidad de nombre solicitado.
     Internamente usa la camara de usuario entrada vehicular (192.168.1.224).
     """
-    result = capture_camera3(OUTPUT_DIR)
-    return build_capture_response(result, "Error al capturar imagen de camara usuario entrada peatonal", include_data_url)
+    save_file = response_mode.lower() != "jpeg"
+    result = capture_camera3(OUTPUT_DIR, save_file=save_file)
+    if response_mode.lower() == "jpeg":
+        return build_capture_jpeg_response(result, "Error al capturar imagen de camara usuario entrada peatonal")
+    return build_capture_response(result, "Error al capturar imagen de camara usuario entrada peatonal", include_data_url, include_image)
 
 
 @app.post("/extract/camara_cedula_entrada_vehicular")

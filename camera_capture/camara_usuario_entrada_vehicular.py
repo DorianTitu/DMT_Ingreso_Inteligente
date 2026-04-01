@@ -12,7 +12,7 @@ from requests.auth import HTTPDigestAuth
 SESSION = requests.Session()
 SESSION.headers.update({"Connection": "keep-alive"})
 
-def capture_camera3(output_dir: str = "snapshots_camaras") -> dict:
+def capture_camera3(output_dir: str = "snapshots_camaras", save_file: bool = True) -> dict:
     """
     Captura foto de Camera3 (usuario entrada vehicular)
     
@@ -27,11 +27,11 @@ def capture_camera3(output_dir: str = "snapshots_camaras") -> dict:
     password = "dmt_2390"
     url = f"http://{ip}/cgi-bin/snapshot.cgi"
     
-    # Crear directorio si no existe
-    os.makedirs(output_dir, exist_ok=True)
-    
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    output_file = os.path.join(output_dir, f"camara_usuario_entrada_vehicular_{timestamp}.jpg")
+    output_file = None
+    if save_file:
+        os.makedirs(output_dir, exist_ok=True)
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        output_file = os.path.join(output_dir, f"camara_usuario_entrada_vehicular_{timestamp}.jpg")
     
     try:
         response = SESSION.get(
@@ -42,14 +42,17 @@ def capture_camera3(output_dir: str = "snapshots_camaras") -> dict:
         )
 
         if response.status_code == 200 and len(response.content) > 1000:
-            with open(output_file, 'wb') as f:
-                f.write(response.content)
+            image_bytes = response.content
+            if output_file:
+                with open(output_file, 'wb') as f:
+                    f.write(image_bytes)
 
-            file_size = os.path.getsize(output_file)
+            file_size = len(image_bytes)
             return {
                 'success': True,
                 'file': output_file,
                 'size': file_size,
+                'image_bytes': image_bytes,
                 'camera': 'Camara Usuario Entrada Vehicular',
                 'ip': ip
             }
@@ -81,7 +84,7 @@ def capture_camera3(output_dir: str = "snapshots_camaras") -> dict:
             'error': 'Timeout'
         }
     except Exception as e:
-        if os.path.exists(output_file):
+        if output_file and os.path.exists(output_file):
             os.remove(output_file)
         return {
             'success': False,
