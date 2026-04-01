@@ -7,6 +7,7 @@ import os
 from io import BytesIO
 from datetime import datetime
 import time
+import re
 
 import requests
 from PIL import Image, ImageDraw
@@ -25,7 +26,7 @@ SESSION = requests.Session()
 SESSION.headers.update({"Connection": "keep-alive"})
 
 # Zonas editables en porcentaje (x1, y1, x2, y2) para ajustar recortes visualmente.
-CROP_ZONE_1_PCT = (0.40, 0.15, 0.98, 0.50)
+CROP_ZONE_1_PCT = (0.37, 0.15, 0.98, 0.50)
 CROP_ZONE_2_PCT = (0.12, 0.80, 0.40, 0.98)
 DRAW_CROP_BOXES = True
 BOX_WIDTH = 5
@@ -84,26 +85,112 @@ def _extract_ocr_with_zone_fallback(image_bytes: bytes) -> dict:
     reader = _get_ocr_reader()
     ocr_started = time.perf_counter()
 
-    # OCR solo en la zona 1 para nombres/apellidos y primera deteccion de cedula.
+    # OCR de zona 1 para nombres/apellidos y primer intento de cedula.
     zone_1_lines = _ocr_lines(reader, _preprocess_image_for_ocr(zone_1_img))
-    apellidos, nombres = _extract_name_parts(zone_1_lines)
-    apellidos = _sanitize_apellidos(apellidos)
-    nombres = _sanitize_nombres(nombres)
 
-    cedula = _extract_cedula(zone_1_lines)
+    def _clean_words(line: str) -> str:
+        cleaned = re.sub(r"[^A-Za-zA-Z\s]", " ", line)
+        return " ".join(cleaned.split()).upper()
+
+    def _extract_cedula_zone_1(lines: list[str]) -> str | None:
+        # Prioriza patrones tipo "No. 172193122-6" y normaliza sin guion.
+        for line in lines:
+            key = line.upper()
+            match_no = re.search(r"(?:N\s*[O0]|N\.)\D*([0-9]{9}\s*-\s*[0-9])", key)
+            if match_no:
+                digits = re.sub(r"\D", "", match_no.group(1))
+                if len(digits) == 10:
+                    return digits
+
+        # Fallback: cualquier bloque de 10 digitos en zona 1 (con o sin guion/espacios).
+        joined = " | ".join(lines)
+        candidates = re.findall(r"[0-9][0-9\s-]{8,}[0-9]", joined)
+        for candidate in candidates:
+            digits = re.sub(r"\D", "", candidate)
+            if len(digits) == 10:
+                return digits
+
+        legacy = _extract_cedula(lines)
+        if legacy:
+            digits = re.sub(r"\D", "", legacy)
+            if len(digits) == 10:
+                return digits
+        return None
+
+    def _extract_combined_names(lines: list[str]) -> tuple[str | None, str | None]:
+        header_idx = -1
+        for idx, line in enumerate(lines):
+            key = line.upper()
+            if ("APELLIDOS" in key or "PELLIDOS" in key) and ("NOMBRE" in key or "NOMBRES" in key):
+                header_idx = idx
+                break
+
+        values = []
+        if header_idx >= 0:
+            search_lines = lines[header_idx + 1:]
+        else:
+            search_lines = lines
+
+        for line in search_lines:
+            key = line.upper()
+            if "LUGAR" in key or "NACIMIENTO" in key or "NACIONALIDAD" in key or "SEXO" in key:
+                break
+            if "CEDULA" in key or "CIUDADAN" in key or "REGISTRO" in key:
+                continue
+            if re.search(r"\d", key):
+                continue
+            cleaned = _clean_words(line)
+            if not cleaned:
+                continue
+            if len(cleaned.split()) < 2:
+                continue
+            values.append(cleaned)
+            if len(values) >= 2:
+                break
+
+        if not values:
+            return _extract_name_parts(lines)
+
+        if len(values) == 1:
+            tokens = values[0].split()
+            if len(tokens) >= 3:
+                apellidos_val = " ".join(tokens[:2])
+                nombres_val = " ".join(tokens[2:4])
+                return apellidos_val, nombres_val
+            return values[0], None
+
+        apellidos_tokens = values[0].split()
+        nombres_tokens = values[1].split()
+        apellidos_val = " ".join(apellidos_tokens[:2]) if apellidos_tokens else None
+        nombres_val = " ".join(nombres_tokens[:2]) if nombres_tokens else None
+        return apellidos_val, nombres_val
+
+    cedula = _extract_cedula_zone_1(zone_1_lines)
     cedula_source = "crop_zone_1"
     fallback_used = False
 
     if not cedula:
-        # Si no aparece en zona 1, intentar solo en zona 2 con filtro a digitos.
+        # Solo si zona 1 no detecta cedula, se ejecuta zona 2 para cédula.
         zone_2_lines = _ocr_lines(
             reader,
             _preprocess_image_for_ocr(zone_2_img),
             allowlist='0123456789NUI.NO'
         )
-        cedula = _extract_cedula(zone_2_lines)
-        cedula_source = "crop_zone_2"
-        fallback_used = True
+        cedula = _extract_cedula_zone_1(zone_2_lines)
+        if cedula:
+            cedula_source = "crop_zone_2"
+            fallback_used = True
+
+    # Regla de formato:
+    # - Si cedula viene de zona 1: nombres y apellidos en campo combinado.
+    # - Si cedula viene de zona 2: nombres/apellidos en campos separados.
+    if cedula_source == "crop_zone_1":
+        apellidos, nombres = _extract_combined_names(zone_1_lines)
+    else:
+        apellidos, nombres = _extract_name_parts(zone_1_lines)
+
+    apellidos = _sanitize_apellidos(apellidos)
+    nombres = _sanitize_nombres(nombres)
 
     ocr_ms = int((time.perf_counter() - ocr_started) * 1000)
     total_ms = int((time.perf_counter() - started) * 1000)
