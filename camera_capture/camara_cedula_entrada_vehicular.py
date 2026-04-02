@@ -328,9 +328,12 @@ def _extract_cedula(lines: list[str]) -> str | None:
 
     for raw_line in lines:
         line_key = _normalize_key(raw_line)
-        for number in re.findall(r'\b\d{8,13}\b', raw_line):
+        # Acepta formatos continuos (1234567890) y con guion verificador (123456789-0).
+        candidates = re.findall(r'\b\d{8,13}(?:\s*-\s*\d)?\b', raw_line)
+        for number in candidates:
+            digits_only = re.sub(r'\D', '', number)
             score = 0
-            if len(number) == 10:
+            if len(digits_only) == 10:
                 score += 6
             if 'NUI' in line_key:
                 score += 6
@@ -341,15 +344,15 @@ def _extract_cedula(lines: list[str]) -> str | None:
 
             if score > best_score:
                 best_score = score
-                best_value = number
+                best_value = digits_only
 
     if best_value:
         return best_value
 
     # Fallback simple: primer candidato encontrado.
     joined = ' '.join(lines)
-    fallback = re.findall(r'\b\d{8,13}\b', joined)
-    return fallback[0] if fallback else None
+    fallback = re.findall(r'\b\d{8,13}(?:\s*-\s*\d)?\b', joined)
+    return re.sub(r'\D', '', fallback[0]) if fallback else None
 
 
 def _extract_name_parts(lines: list[str]) -> tuple[str | None, str | None]:

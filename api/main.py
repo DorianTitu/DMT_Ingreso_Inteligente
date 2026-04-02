@@ -19,19 +19,21 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from camera_capture import (
-    capture_camera1, 
-    capture_camera3, 
+    capture_camera1,
     capture_camera250,
     capture_cedula_entrada_peatonal,
 )
+from camera_capture.camara_usuario_entrada_vehicular import capture_camera3 as capture_usuario_entrada_vehicular
+from camera_capture.camara_usuario_entrada_peatonal import capture_camera3 as capture_usuario_entrada_peatonal
 from camera_capture.camara_cedula_entrada_vehicular import (
     warmup_cedula_ocr_reader,
     extract_cedula_data_from_bytes,
 )
 
-# Agregar el directorio padre al path para importar registro_vehicular
+# Agregar el directorio padre al path para importar registro_vehicular y registro_peatonal
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import registro_vehicular
+import registro_peatonal
 
 # Crear aplicación FastAPI
 app = FastAPI(
@@ -67,6 +69,28 @@ class RegistroVehicularRequest(BaseModel):
                 "imagen_cedula_base64": "base64_string...",
                 "imagen_usuario_base64": "base64_string...",
                 "imagen_placa_base64": "base64_string...",
+                "hora_ingreso": "14:30:45"
+            }
+        }
+
+
+class RegistroPeaonalRequest(BaseModel):
+    """Modelo para guardar un registro de ingreso peatonal completo"""
+    persona: str
+    cedula: str
+    departamento: str
+    imagen_cedula_base64: Optional[str] = None
+    imagen_usuario_base64: Optional[str] = None
+    hora_ingreso: Optional[str] = None
+    
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "persona": "Juan Pérez García",
+                "cedula": "1234567890",
+                "departamento": "Administración",
+                "imagen_cedula_base64": "base64_string...",
+                "imagen_usuario_base64": "base64_string...",
                 "hora_ingreso": "14:30:45"
             }
         }
@@ -213,17 +237,24 @@ def process_cedula_from_base64(base64_data: str) -> dict:
 
 @app.on_event("startup")
 async def startup_event():
-    """Crear directorios necesarios e inicializar registro manager"""
+    """Crear directorios necesarios e inicializar registro managers"""
     os.makedirs(OUTPUT_DIR, exist_ok=True)
     
-    # Obtener ruta base desde .env o usar ruta relativa como fallback
-    ruta_base = os.environ.get(
+    # Obtener ruta base para registros vehiculares desde .env o usar ruta relativa como fallback
+    ruta_base_vehicular = os.environ.get(
         'REGISTRO_VEHICULAR_PATH',
         os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'registros_vehiculares')
     )
+    print(f"📁 Ruta de registros vehiculares: {ruta_base_vehicular}")
+    registro_vehicular.inicializar_registro_manager(ruta_base_vehicular)
     
-    print(f"📁 Ruta de registros: {ruta_base}")
-    registro_vehicular.inicializar_registro_manager(ruta_base)
+    # Obtener ruta base para registros peatonales desde .env o usar ruta por defecto
+    ruta_base_peatonal = os.environ.get(
+        'REGISTRO_PEATONAL_PATH',
+        r'C:\Users\LENOVO\Documents\Base de datos\DMT_Gestion_Ingreso\Ingreso Peatonal'
+    )
+    print(f"📁 Ruta de registros peatonales: {ruta_base_peatonal}")
+    registro_peatonal.inicializar_registro_manager(ruta_base_peatonal)
 
     try:
         warmup_cedula_ocr_reader()
@@ -240,18 +271,26 @@ async def root():
         "descripcion": "API para capturar imágenes de cámaras Dahua ONVIF y guardar registros",
         "endpoints": {
             "capture": {
-                "/capture/camara_placa_entrada_vehicular": "Capturar imagen de Camera1",
-                "/capture/camara_usuario_entrada_vehicular": "Capturar imagen de Camera3",
-                "/capture/camara_cedula_entrada_vehicular": "Capturar imagen de Camera250 (solo captura)",
-                "/capture/camara_cedula_entrada_peatonal": "Capturar imagen de camara cedula entrada peatonal",
-                "/capture/camara_usuario_entrada_peatonal": "Alias de camara cedula entrada peatonal",
+                "/capture/camara_placa_entrada_vehicular": "Capturar imagen de Camera1 (placa vehicular)",
+                "/capture/camara_usuario_entrada_vehicular": "Capturar imagen de Camera3 (usuario vehicular, 192.168.1.224)",
+                "/capture/camara_cedula_entrada_vehicular": "Capturar imagen de Camera250 (cédula vehicular, sin OCR)",
+                "/capture/camara_cedula_entrada_peatonal": "Capturar imagen de cámara cédula entrada peatonal (192.168.1.3, con OCR)",
+                "/capture/camara_usuario_entrada_peatonal": "Capturar imagen de usuario entrada peatonal (192.168.1.224, alias)"
+            },
+            "ocr": {
                 "/extract/camara_cedula_entrada_vehicular": "Extraer datos OCR de una imagen base64"
             },
-            "registro": {
+            "registro_vehicular": {
                 "/save/registro_vehicular": "Guardar registro completo de ingreso vehicular",
-                "/get/registro_vehicular": "Listar todos los tickets desde el Excel",
-                "/get/fotos_ticket/{ticket}": "Obtener fotos guardadas por ticket",
-                "/update/hora_salida": "Actualizar hora de salida por ticket"
+                "/get/registro_vehicular": "Listar todos los tickets vehiculares desde el Excel",
+                "/get/fotos_ticket/{ticket}": "Obtener fotos guardadas por ticket vehicular",
+                "/update/hora_salida": "Actualizar hora de salida vehicular por ticket"
+            },
+            "registro_peatonal": {
+                "/save/registro_peatonal": "Guardar registro completo de ingreso peatonal",
+                "/get/registro_peatonal": "Listar todos los tickets peatonales desde el Excel",
+                "/get/fotos_ticket_peatonal/{ticket}": "Obtener fotos guardadas por ticket peatonal",
+                "/update/hora_salida_peatonal": "Actualizar hora de salida peatonal por ticket"
             },
             "salud": {
                 "/health": "Estado de salud de la API"
@@ -279,12 +318,12 @@ async def capture_camera1_endpoint(include_data_url: bool = False, include_image
 @app.post("/capture/camara_usuario_entrada_vehicular")
 async def capture_camera3_endpoint(include_data_url: bool = False, include_image: bool = True, response_mode: str = "json"):
     """
-    Captura imagen de Camera3 (192.168.1.223)
-    Protocolo: RTSP
+    Captura imagen de camara usuario entrada vehicular.
+    Protocolo: HTTP Digest
     Descripción: Usuario entrada vehicular
     """
     save_file = response_mode.lower() != "jpeg"
-    result = capture_camera3(OUTPUT_DIR, save_file=save_file)
+    result = capture_usuario_entrada_vehicular(OUTPUT_DIR, save_file=save_file)
     if response_mode.lower() == "jpeg":
         return build_capture_jpeg_response(result, f"Error al capturar imagen de {result.get('camera', 'Camera3 (Usuario)')}")
     return build_capture_response(result, f"Error al capturar imagen de {result.get('camera', 'Camera3 (Usuario)')}", include_data_url, include_image)
@@ -319,11 +358,11 @@ async def capture_cedula_peatonal_endpoint(include_data_url: bool = False, inclu
 @app.post("/capture/camara_usuario_entrada_peatonal")
 async def capture_usuario_peatonal_endpoint(include_data_url: bool = False, include_image: bool = True, response_mode: str = "json"):
     """
-    Alias para compatibilidad de nombre solicitado.
-    Internamente usa la camara de usuario entrada vehicular (192.168.1.224).
+    Captura imagen de camara usuario entrada peatonal.
+    Protocolo: HTTP Digest
     """
     save_file = response_mode.lower() != "jpeg"
-    result = capture_camera3(OUTPUT_DIR, save_file=save_file)
+    result = capture_usuario_entrada_peatonal(OUTPUT_DIR, save_file=save_file)
     if response_mode.lower() == "jpeg":
         return build_capture_jpeg_response(result, "Error al capturar imagen de camara usuario entrada peatonal")
     return build_capture_response(result, "Error al capturar imagen de camara usuario entrada peatonal", include_data_url, include_image)
@@ -462,6 +501,143 @@ async def update_hora_salida(payload: HoraSalidaRequest):
         )
 
     resultado = registro_vehicular.registro_manager.actualizar_hora_salida_por_ticket(
+        payload.ticket,
+        payload.hora_salida
+    )
+
+    if not resultado.get('success'):
+        detalle = resultado.get('error', 'Desconocido')
+        status_code = 404 if 'No se encontró el ticket' in detalle else 400
+        raise HTTPException(status_code=status_code, detail=detalle)
+
+    return JSONResponse(
+        status_code=200,
+        content={
+            'success': True,
+            'ticket': resultado.get('ticket'),
+            'hora_salida': resultado.get('hora_salida'),
+            'mensaje': resultado.get('mensaje')
+        }
+    )
+
+
+# ============ ENDPOINTS PARA REGISTRO PEATONAL ============
+
+@app.post("/save/registro_peatonal")
+async def save_registro_peatonal(registro: RegistroPeaonalRequest):
+    """
+    Guarda un registro completo de ingreso de peatón
+    - Crea la estructura de carpetas (YEAR/MES/DIA/TICKET_#####)
+    - Guarda las imágenes en la carpeta del ticket
+    - Actualiza el Excel maestro con campos: TICKET, PERSONA, CÉDULA, DEPARTAMENTO, INGRESO, SALIDA/ESTADO
+    
+    Retorna:
+    {
+        "success": true,
+        "numero_ticket": 42,
+        "mensaje": "Registro TICKET_000042 guardado exitosamente",
+        "ruta_ticket": "C:/ruta/2026/01_Enero/15/TICKET_000042"
+    }
+    """
+    if registro_peatonal.registro_manager is None:
+        raise HTTPException(
+            status_code=500,
+            detail="El sistema de registro de peatones no está inicializado"
+        )
+    
+    try:
+        # Preparar datos
+        datos = {
+            'persona': registro.persona,
+            'cedula': registro.cedula,
+            'departamento': registro.departamento,
+            'imagen_cedula_base64': registro.imagen_cedula_base64,
+            'imagen_usuario_base64': registro.imagen_usuario_base64,
+            'hora_ingreso': registro.hora_ingreso
+        }
+        
+        # Guardar registro
+        resultado = registro_peatonal.registro_manager.guardar_registro(datos)
+        
+        if resultado.get('success'):
+            return JSONResponse(
+                status_code=200,
+                content={
+                    "success": True,
+                    "numero_ticket": resultado['numero_ticket'],
+                    "codigo_ticket": f"TICKET_{resultado['numero_ticket']:06d}",
+                    "ruta_ticket": resultado['ruta_ticket'],
+                    "imagenes_guardadas": resultado['imagenes'],
+                    "mensaje": resultado['mensaje']
+                }
+            )
+        else:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Error al guardar registro peatonal: {resultado.get('error', 'Desconocido')}"
+            )
+    
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error procesando registro peatonal: {str(e)}"
+        )
+
+
+@app.get("/get/registro_peatonal")
+async def get_registro_peatonal():
+    """Lista todos los tickets del Excel maestro de ingreso de peatones."""
+    if registro_peatonal.registro_manager is None:
+        raise HTTPException(
+            status_code=500,
+            detail="El sistema de registro de peatones no está inicializado"
+        )
+
+    resultado = registro_peatonal.registro_manager.obtener_todos_tickets()
+    if not resultado.get('success'):
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error leyendo tickets peatonales: {resultado.get('error', 'Desconocido')}"
+        )
+
+    return JSONResponse(
+        status_code=200,
+        content={
+            'success': True,
+            'total': resultado.get('cantidad', 0),
+            'tickets': resultado.get('tickets', []),
+        }
+    )
+
+
+@app.get("/get/fotos_ticket_peatonal/{ticket}")
+async def get_fotos_ticket_peatonal(ticket: str):
+    """Obtiene las fotos guardadas (cedula/usuario) para un ticket de peatón."""
+    if registro_peatonal.registro_manager is None:
+        raise HTTPException(
+            status_code=500,
+            detail="El sistema de registro de peatones no está inicializado"
+        )
+
+    resultado = registro_peatonal.registro_manager.obtener_fotos_por_ticket(ticket)
+    if not resultado.get('success'):
+        detalle = resultado.get('error', 'Desconocido')
+        status_code = 404 if 'No se encontró carpeta' in detalle else 400
+        raise HTTPException(status_code=status_code, detail=detalle)
+
+    return JSONResponse(status_code=200, content=resultado)
+
+
+@app.post("/update/hora_salida_peatonal")
+async def update_hora_salida_peatonal(payload: HoraSalidaRequest):
+    """Actualiza hora de salida de un peatón usando número o código de ticket."""
+    if registro_peatonal.registro_manager is None:
+        raise HTTPException(
+            status_code=500,
+            detail="El sistema de registro de peatones no está inicializado"
+        )
+
+    resultado = registro_peatonal.registro_manager.actualizar_hora_salida_por_ticket(
         payload.ticket,
         payload.hora_salida
     )
