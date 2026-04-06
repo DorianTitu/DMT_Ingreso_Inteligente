@@ -429,25 +429,56 @@ class RegistroVehicular:
                 'tickets': [],
             }
 
-    def _buscar_carpeta_ticket(self, codigo_ticket: str) -> Optional[Path]:
-        """Busca la carpeta física asociada a un ticket."""
-        if not codigo_ticket:
+    def _obtener_fecha_registro(self, codigo_ticket: str) -> Optional[str]:
+        """Obtiene la fecha de registro del Excel para un ticket específico."""
+        try:
+            wb = openpyxl.load_workbook(self.ruta_excel, data_only=True)
+            ws = wb["Registros"]
+            
+            for fila in range(2, ws.max_row + 1):
+                numero_ticket_celda = str(ws.cell(row=fila, column=1).value or "").strip().upper()
+                if numero_ticket_celda == codigo_ticket:
+                    fecha_registro = ws.cell(row=fila, column=9).value  # Columna 9 es FECHA_REGISTRO
+                    wb.close()
+                    return str(fecha_registro) if fecha_registro else None
+            
+            wb.close()
+            return None
+        except Exception as e:
             return None
 
-        rutas_raiz = [self.ruta_base / str(self.año_actual), self.ruta_base]
-        for raiz in rutas_raiz:
-            if not raiz.exists():
-                continue
-
-            for ruta in raiz.rglob(codigo_ticket):
-                if ruta.is_dir() and ruta.name.upper() == codigo_ticket:
-                    return ruta
-
-        return None
+    def _construir_ruta_ticket(self, codigo_ticket: str, fecha_registro: str) -> Optional[Path]:
+        """
+        Construye la ruta de la carpeta del ticket usando la fecha.
+        Sin búsqueda recursiva - acceso O(1).
+        
+        Formato: /año/mes/día/TICKET_######/
+        """
+        try:
+            # Limpiar fecha (remover hora si existe)
+            fecha_limpia = str(fecha_registro).split()[0]  # Toma "2026-03-25" de "2026-03-25 15:41:38"
+            partes = fecha_limpia.split('-')
+            
+            if len(partes) != 3:
+                return None
+            
+            año, mes, día = int(partes[0]), int(partes[1]), int(partes[2])
+            mes_nombre = self.MESES.get(mes, f"{mes:02d}")
+            
+            # Construir ruta: /año/mes/día/TICKET_######/
+            ruta = self.ruta_base / str(año) / mes_nombre / f"{día:02d}" / codigo_ticket
+            
+            if ruta.exists() and ruta.is_dir():
+                return ruta
+            
+            return None
+        except Exception:
+            return None
 
     def obtener_fotos_por_ticket(self, ticket_ref: str) -> Dict:
         """
-        Recupera imágenes asociadas a un ticket y las retorna en base64.
+        Recupera imágenes asociadas a un ticket (OPTIMIZADO - O(1) con fallback).
+        Intenta primero con construcción directa de ruta, si falla busca recursivamente.
 
         Args:
             ticket_ref: Número (ej: 1) o código (ej: TICKET_000001)
@@ -463,8 +494,18 @@ class RegistroVehicular:
                     'error': 'Ticket inválido'
                 }
 
-            carpeta_ticket = self._buscar_carpeta_ticket(codigo_ticket)
-            if carpeta_ticket is None:
+            carpeta_ticket = None
+
+            # Intento 1: Obtener fecha del Excel y construir ruta (O(1))
+            fecha_registro = self._obtener_fecha_registro(codigo_ticket)
+            if fecha_registro:
+                carpeta_ticket = self._construir_ruta_ticket(codigo_ticket, fecha_registro)
+
+            # Fallback: Búsqueda recursiva si método O(1) falla
+            if not carpeta_ticket:
+                carpeta_ticket = self._buscar_carpeta_ticket(codigo_ticket)
+
+            if not carpeta_ticket:
                 return {
                     'success': False,
                     'error': f'No se encontró carpeta para el ticket {codigo_ticket}'
@@ -501,6 +542,88 @@ class RegistroVehicular:
                 'faltantes': faltantes,
                 'fotos': fotos,
             }
+
+        except Exception as e:
+            return {
+                'success': False,
+                'error': str(e)
+            }
+
+    def _buscar_carpeta_ticket(self, codigo_ticket: str) -> Optional[Path]:
+        """Busca la carpeta física asociada a un ticket."""
+        if not codigo_ticket:
+            return None
+
+        rutas_raiz = [self.ruta_base / str(self.año_actual), self.ruta_base]
+        for raiz in rutas_raiz:
+            if not raiz.exists():
+                continue
+
+            for ruta in raiz.rglob(codigo_ticket):
+                if ruta.is_dir() and ruta.name.upper() == codigo_ticket:
+                    return ruta
+
+        return None
+
+    def actualizar_registro_por_ticket(self, ticket_ref: str, datos_actualizacion: Dict) -> Dict:
+        """
+        Actualiza múltiples campos de un registro vehicular por ticket.
+
+        Args:
+            ticket_ref: Número (ej: 1) o código (ej: TICKET_000001)
+            datos_actualizacion: Dict con campos a actualizar
+                                 Ej: {'nombres': 'Juan', 'apellidos': 'Pérez', 'motivo': 'Reunión'}
+
+        Returns:
+            dict con resultado de la actualización.
+        """
+        try:
+            codigo_ticket = self._normalizar_codigo_ticket(ticket_ref)
+            if not codigo_ticket:
+                return {
+                    'success': False,
+                    'error': 'Ticket inválido'
+                }
+
+            # Mapeo de campos a columnas del Excel
+            mapeo_columnas = {
+                'nombres': 2,
+                'apellidos': 3,
+                'cedula': 4,
+                'departamento': 7,
+                'motivo': 8
+            }
+
+            wb = openpyxl.load_workbook(self.ruta_excel)
+            ws = wb["Registros"]
+
+            registro_encontrado = False
+            for fila in range(2, ws.max_row + 1):
+                numero_ticket_celda = str(ws.cell(row=fila, column=1).value or "").strip().upper()
+                if numero_ticket_celda == codigo_ticket:
+                    registro_encontrado = True
+                    # Actualizar los campos enviados
+                    for campo, valor in datos_actualizacion.items():
+                        if campo in mapeo_columnas and valor is not None:
+                            columna = mapeo_columnas[campo]
+                            ws.cell(row=fila, column=columna, value=valor)
+                    
+                    wb.save(self.ruta_excel)
+                    wb.close()
+                    return {
+                        'success': True,
+                        'ticket': codigo_ticket,
+                        'campos_actualizados': list(datos_actualizacion.keys()),
+                        'mensaje': f'Registro {codigo_ticket} actualizado exitosamente'
+                    }
+
+            wb.close()
+            
+            if not registro_encontrado:
+                return {
+                    'success': False,
+                    'error': f'No se encontró el ticket {codigo_ticket}'
+                }
 
         except Exception as e:
             return {

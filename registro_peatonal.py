@@ -77,17 +77,19 @@ class RegistroPeatonal:
             self._crear_excel_nuevo()
     
     def _crear_excel_nuevo(self):
-        """Crea un nuevo archivo Excel con la estructura de registros de peatones"""
+        """Crea un nuevo archivo Excel con la estructura de registros de peatones - IGUAL A VEHICULAR"""
         wb = openpyxl.Workbook()
         ws = wb.active
         ws.title = "Registros"
         
-        # Encabezados: TICKET, PERSONA, CÉDULA, DEPARTAMENTO, INGRESO, SALIDA/ESTADO, FECHA_REGISTRO
+        # Encabezados: TICKET, NOMBRE, APELLIDO, CÉDULA, DEPARTAMENTO, MOTIVO, INGRESO, SALIDA/ESTADO, FECHA_REGISTRO
         encabezados = [
             "TICKET",
-            "PERSONA",
+            "NOMBRE",
+            "APELLIDO",
             "CÉDULA",
             "DEPARTAMENTO",
+            "MOTIVO",
             "INGRESO",
             "SALIDA/ESTADO",
             "FECHA_REGISTRO"
@@ -108,12 +110,14 @@ class RegistroPeatonal:
         
         # Ajustar ancho de columnas
         ws.column_dimensions['A'].width = 15  # TICKET
-        ws.column_dimensions['B'].width = 30  # PERSONA
-        ws.column_dimensions['C'].width = 15  # CÉDULA
-        ws.column_dimensions['D'].width = 20  # DEPARTAMENTO
-        ws.column_dimensions['E'].width = 12  # INGRESO
-        ws.column_dimensions['F'].width = 12  # SALIDA/ESTADO
-        ws.column_dimensions['G'].width = 20  # FECHA_REGISTRO
+        ws.column_dimensions['B'].width = 15  # NOMBRE
+        ws.column_dimensions['C'].width = 15  # APELLIDO
+        ws.column_dimensions['D'].width = 15  # CÉDULA
+        ws.column_dimensions['E'].width = 20  # DEPARTAMENTO
+        ws.column_dimensions['F'].width = 20  # MOTIVO
+        ws.column_dimensions['G'].width = 12  # INGRESO
+        ws.column_dimensions['H'].width = 12  # SALIDA/ESTADO
+        ws.column_dimensions['I'].width = 20  # FECHA_REGISTRO
         
         wb.save(self.ruta_excel)
         wb.close()
@@ -196,9 +200,11 @@ class RegistroPeatonal:
         Args:
             datos: Diccionario con:
                 {
-                    'persona': str,  # Nombres y apellidos
+                    'nombre': str,
+                    'apellido': str,
                     'cedula': str,
                     'departamento': str,
+                    'motivo': str,
                     'imagen_cedula_base64': str o bytes (opcional),
                     'imagen_usuario_base64': str o bytes (opcional),
                     'hora_ingreso': str (opcional, formato HH:MM:SS)
@@ -233,9 +239,11 @@ class RegistroPeatonal:
             # Agregar datos al Excel
             self._agregar_fila_excel(
                 numero_ticket,
-                datos['persona'],
+                datos['nombre'],
+                datos['apellido'],
                 datos['cedula'],
                 datos['departamento'],
+                datos.get('motivo', ''),
                 datos.get('hora_ingreso', datetime.now().strftime("%H:%M:%S")),
                 ''  # hora_salida vacía al inicio
             )
@@ -255,9 +263,9 @@ class RegistroPeatonal:
                 'numero_ticket': None
             }
     
-    def _agregar_fila_excel(self, numero_ticket: int, persona: str,
-                           cedula: str, departamento: str, hora_ingreso: str, 
-                           hora_salida: str):
+    def _agregar_fila_excel(self, numero_ticket: int, nombre: str, apellido: str,
+                           cedula: str, departamento: str, motivo: str, 
+                           hora_ingreso: str, hora_salida: str):
         """Agrega una fila al Excel"""
         wb = openpyxl.load_workbook(self.ruta_excel)
         ws = wb["Registros"]
@@ -265,12 +273,14 @@ class RegistroPeatonal:
         # Obtener siguiente fila
         siguiente_fila = ws.max_row + 1
         
-        # Datos a insertar: TICKET, PERSONA, CÉDULA, DEPARTAMENTO, INGRESO, SALIDA/ESTADO, FECHA_REGISTRO
+        # Datos a insertar: TICKET, NOMBRE, APELLIDO, CÉDULA, DEPARTAMENTO, MOTIVO, INGRESO, SALIDA/ESTADO, FECHA_REGISTRO
         datos = [
             f"TICKET_{numero_ticket:06d}",
-            persona,
+            nombre,
+            apellido,
             cedula,
             departamento,
+            motivo,
             hora_ingreso,
             hora_salida,
             datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -410,12 +420,14 @@ class RegistroPeatonal:
                 
                 tickets.append({
                     'ticket': fila[0],
-                    'persona': fila[1],
-                    'cedula': fila[2],
-                    'departamento': fila[3],
-                    'ingreso': fila[4],
-                    'salida_estado': fila[5],
-                    'fecha_registro': fila[6]
+                    'nombre': fila[1],
+                    'apellido': fila[2],
+                    'cedula': fila[3],
+                    'departamento': fila[4],
+                    'motivo': fila[5],
+                    'ingreso': fila[6],
+                    'salida_estado': fila[7],
+                    'fecha_registro': fila[8]
                 })
             
             wb.close()
@@ -484,25 +496,56 @@ class RegistroPeatonal:
                 'imagenes': {}
             }
 
-    def _buscar_carpeta_ticket(self, codigo_ticket: str) -> Optional[Path]:
-        """Busca la carpeta física asociada a un ticket."""
-        if not codigo_ticket:
+    def _obtener_fecha_registro(self, codigo_ticket: str) -> Optional[str]:
+        """Obtiene la fecha de registro del Excel para un ticket específico."""
+        try:
+            wb = openpyxl.load_workbook(self.ruta_excel, data_only=True)
+            ws = wb["Registros"]
+            
+            for fila in range(2, ws.max_row + 1):
+                numero_ticket_celda = str(ws.cell(row=fila, column=1).value or "").strip().upper()
+                if numero_ticket_celda == codigo_ticket:
+                    fecha_registro = ws.cell(row=fila, column=9).value  # Columna 9 es FECHA_REGISTRO
+                    wb.close()
+                    return str(fecha_registro) if fecha_registro else None
+            
+            wb.close()
+            return None
+        except Exception as e:
             return None
 
-        rutas_raiz = [self.ruta_base / str(self.año_actual), self.ruta_base]
-        for raiz in rutas_raiz:
-            if not raiz.exists():
-                continue
-
-            for ruta in raiz.rglob(codigo_ticket):
-                if ruta.is_dir() and ruta.name.upper() == codigo_ticket:
-                    return ruta
-
-        return None
+    def _construir_ruta_ticket(self, codigo_ticket: str, fecha_registro: str) -> Optional[Path]:
+        """
+        Construye la ruta de la carpeta del ticket usando la fecha.
+        Sin búsqueda recursiva - acceso O(1).
+        
+        Formato: /año/mes/día/TICKET_######/
+        """
+        try:
+            # Limpiar fecha (remover hora si existe)
+            fecha_limpia = str(fecha_registro).split()[0]  # Toma "2026-03-25" de "2026-03-25 15:41:38"
+            partes = fecha_limpia.split('-')
+            
+            if len(partes) != 3:
+                return None
+            
+            año, mes, día = int(partes[0]), int(partes[1]), int(partes[2])
+            mes_nombre = self.MESES.get(mes, f"{mes:02d}")
+            
+            # Construir ruta: /año/mes/día/TICKET_######/
+            ruta = self.ruta_base / str(año) / mes_nombre / f"{día:02d}" / codigo_ticket
+            
+            if ruta.exists() and ruta.is_dir():
+                return ruta
+            
+            return None
+        except Exception:
+            return None
 
     def obtener_fotos_por_ticket(self, ticket_ref: str) -> Dict:
         """
-        Recupera imágenes asociadas a un ticket y las retorna en base64.
+        Recupera imágenes asociadas a un ticket (OPTIMIZADO - O(1) con fallback).
+        Intenta primero con construcción directa de ruta, si falla busca recursivamente.
 
         Args:
             ticket_ref: Número (ej: 1) o código (ej: TICKET_000001)
@@ -518,8 +561,18 @@ class RegistroPeatonal:
                     'error': 'Ticket inválido'
                 }
 
-            carpeta_ticket = self._buscar_carpeta_ticket(codigo_ticket)
-            if carpeta_ticket is None:
+            carpeta_ticket = None
+
+            # Intento 1: Obtener fecha del Excel y construir ruta (O(1))
+            fecha_registro = self._obtener_fecha_registro(codigo_ticket)
+            if fecha_registro:
+                carpeta_ticket = self._construir_ruta_ticket(codigo_ticket, fecha_registro)
+
+            # Fallback: Búsqueda recursiva si método O(1) falla
+            if not carpeta_ticket:
+                carpeta_ticket = self._buscar_carpeta_ticket(codigo_ticket)
+
+            if not carpeta_ticket:
                 return {
                     'success': False,
                     'error': f'No se encontró carpeta para el ticket {codigo_ticket}'
@@ -555,6 +608,89 @@ class RegistroPeatonal:
                 'faltantes': faltantes,
                 'fotos': fotos,
             }
+
+        except Exception as e:
+            return {
+                'success': False,
+                'error': str(e)
+            }
+
+    def _buscar_carpeta_ticket(self, codigo_ticket: str) -> Optional[Path]:
+        """Busca la carpeta física asociada a un ticket."""
+        if not codigo_ticket:
+            return None
+
+        rutas_raiz = [self.ruta_base / str(self.año_actual), self.ruta_base]
+        for raiz in rutas_raiz:
+            if not raiz.exists():
+                continue
+
+            for ruta in raiz.rglob(codigo_ticket):
+                if ruta.is_dir() and ruta.name.upper() == codigo_ticket:
+                    return ruta
+
+        return None
+
+    def actualizar_registro_por_ticket(self, ticket_ref: str, datos_actualizacion: Dict) -> Dict:
+        """
+        Actualiza múltiples campos de un registro peatonal por ticket.
+
+        Args:
+            ticket_ref: Número (ej: 1) o código (ej: TICKET_000001)
+            datos_actualizacion: Dict con campos a actualizar
+                                 Ej: {'nombre': 'Juan', 'apellido': 'Pérez', 'motivo': 'Reunión'}
+
+        Returns:
+            dict con resultado de la actualización.
+        """
+        try:
+            codigo_ticket = self._normalizar_codigo_ticket(ticket_ref)
+            if not codigo_ticket:
+                return {
+                    'success': False,
+                    'error': 'Ticket inválido'
+                }
+
+            # Mapeo de campos a columnas del Excel
+            # TICKET(1), NOMBRE(2), APELLIDO(3), CÉDULA(4), DEPARTAMENTO(5), MOTIVO(6), INGRESO(7), SALIDA/ESTADO(8), FECHA_REGISTRO(9)
+            mapeo_columnas = {
+                'nombre': 2,
+                'apellido': 3,
+                'cedula': 4,
+                'departamento': 5,
+                'motivo': 6
+            }
+
+            wb = openpyxl.load_workbook(self.ruta_excel)
+            ws = wb["Registros"]
+
+            registro_encontrado = False
+            for fila in range(2, ws.max_row + 1):
+                numero_ticket_celda = str(ws.cell(row=fila, column=1).value or "").strip().upper()
+                if numero_ticket_celda == codigo_ticket:
+                    registro_encontrado = True
+                    # Actualizar los campos enviados
+                    for campo, valor in datos_actualizacion.items():
+                        if campo in mapeo_columnas and valor is not None:
+                            columna = mapeo_columnas[campo]
+                            ws.cell(row=fila, column=columna, value=valor)
+                    
+                    wb.save(self.ruta_excel)
+                    wb.close()
+                    return {
+                        'success': True,
+                        'ticket': codigo_ticket,
+                        'campos_actualizados': list(datos_actualizacion.keys()),
+                        'mensaje': f'Registro {codigo_ticket} actualizado exitosamente'
+                    }
+
+            wb.close()
+            
+            if not registro_encontrado:
+                return {
+                    'success': False,
+                    'error': f'No se encontró el ticket {codigo_ticket}'
+                }
 
         except Exception as e:
             return {
