@@ -5,13 +5,15 @@ Integración de servicios, repositorios y rutas
 
 import os
 import sys
+import shutil
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 # Configuración
 from app.config import (
     API_TITLE, API_DESCRIPTION, API_VERSION,
-    OUTPUT_DIR, REGISTRO_VEHICULAR_PATH, REGISTRO_PEATONAL_PATH
+    OUTPUT_DIR, REGISTRO_VEHICULAR_PATH, REGISTRO_PEATONAL_PATH,
+    CLEAR_CAPTURE_CACHE_ON_STARTUP,
 )
 
 # Servicios
@@ -69,6 +71,22 @@ async def startup_event():
     
     # Crear directorios
     os.makedirs(OUTPUT_DIR, exist_ok=True)
+
+    if CLEAR_CAPTURE_CACHE_ON_STARTUP:
+        removed_count = 0
+        for entry_name in os.listdir(OUTPUT_DIR):
+            entry_path = os.path.join(OUTPUT_DIR, entry_name)
+            try:
+                if os.path.isfile(entry_path) or os.path.islink(entry_path):
+                    os.remove(entry_path)
+                    removed_count += 1
+                elif os.path.isdir(entry_path):
+                    shutil.rmtree(entry_path, ignore_errors=True)
+                    removed_count += 1
+            except OSError:
+                # Continua aunque algun archivo este bloqueado por otro proceso.
+                continue
+        print(f"[CACHE] Limpieza de capturas temporales: {removed_count} elementos removidos")
     
     # ============ INICIALIZAR MANAGERS DE REGISTRO ============
     

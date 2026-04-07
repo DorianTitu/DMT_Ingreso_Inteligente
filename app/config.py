@@ -13,6 +13,7 @@ load_dotenv()
 
 # ============ DIRECTORIOS ============
 OUTPUT_DIR = os.path.join(tempfile.gettempdir(), "dmt_capture_tmp")
+CLEAR_CAPTURE_CACHE_ON_STARTUP = os.environ.get('CLEAR_CAPTURE_CACHE_ON_STARTUP', 'true').lower() == 'true'
 
 # ============ RUTAS DE ALMACENAMIENTO ============
 REGISTRO_VEHICULAR_PATH = os.environ.get(
