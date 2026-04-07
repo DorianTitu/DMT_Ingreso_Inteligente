@@ -174,7 +174,20 @@ def _extract_ocr_with_zone_fallback(image_bytes: bytes) -> dict:
             "DIRECCION",
             "GENERAL",
         )
-        return any(noise in key for noise in noise_keys)
+        # Verificación exacta de substring
+        for noise in noise_keys:
+            if noise in key:
+                return True
+        
+        # Verificación robusta ante OCR parcial: detecta prefijos
+        # Si la línea contiene al menos 6 caracteres del prefijo de una palabra de ruido
+        for noise in noise_keys:
+            if len(noise) >= 6:
+                prefix = noise[:6]
+                if prefix in key:
+                    return True
+        
+        return False
 
     def _extract_names_following_pattern(lines: list[str]) -> tuple[str | None, str | None]:
         """
@@ -367,6 +380,7 @@ def _extract_ocr_with_zone_fallback(image_bytes: bytes) -> dict:
     nombres = None
     cedula_source = None
     flow_route = None
+    zone_4_lines_debug = None
 
     if cedula:
         cedula_source = "crop_zone_1"
@@ -374,6 +388,7 @@ def _extract_ocr_with_zone_fallback(image_bytes: bytes) -> dict:
 
         # Si la cedula esta en el recorte 1, los nombres salen separados en el recorte 4.
         zone_4_lines = _ocr_lines(reader, _preprocess_image_for_ocr(zone_4_img))
+        zone_4_lines_debug = zone_4_lines
         apellidos, nombres = _extract_zone_4_separated_names(zone_4_lines)
         if ENABLE_PRECISE_NAME_FALLBACK and (not apellidos or not nombres):
             zone_4_lines_precise = _ocr_lines_precise(reader, zone_4_img)
@@ -407,7 +422,7 @@ def _extract_ocr_with_zone_fallback(image_bytes: bytes) -> dict:
     ocr_ms = int((time.perf_counter() - ocr_started) * 1000)
     total_ms = int((time.perf_counter() - started) * 1000)
 
-    return {
+    result = {
         "cedula": cedula,
         "nombres": nombres,
         "apellidos": apellidos,
@@ -421,7 +436,10 @@ def _extract_ocr_with_zone_fallback(image_bytes: bytes) -> dict:
             "total_ms": total_ms,
             "cedula_fallback_used": False,
         },
+        "debug_zone_4_lines": zone_4_lines_debug,
     }
+    
+    return result
 
 
 def capture_cedula_entrada_peatonal(
