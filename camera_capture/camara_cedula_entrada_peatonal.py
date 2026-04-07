@@ -12,6 +12,7 @@ import numpy as np
 
 import requests
 from PIL import Image, ImageDraw, ImageOps
+from requests.adapters import HTTPAdapter
 from requests.auth import HTTPDigestAuth
 from .camara_cedula_entrada_vehicular import (
     _extract_cedula,
@@ -25,6 +26,14 @@ from .camara_cedula_entrada_vehicular import (
 
 SESSION = requests.Session()
 SESSION.headers.update({"Connection": "keep-alive"})
+SESSION.mount("http://", HTTPAdapter(pool_connections=10, pool_maxsize=10, max_retries=0))
+
+CAMERA_IP = "192.168.1.3"
+CAMERA_USER = "admin"
+CAMERA_PASSWORD = "DMT_1990"
+SNAPSHOT_URL = f"http://{CAMERA_IP}/cgi-bin/snapshot.cgi"
+SNAPSHOT_AUTH = HTTPDigestAuth(CAMERA_USER, CAMERA_PASSWORD)
+SNAPSHOT_TIMEOUT = (1.5, 4.0)
 
 # Zonas editables en porcentaje (x1, y1, x2, y2) para ajustar recortes visualmente.
 CROP_ZONE_1_PCT = (0.12, 0.80, 0.40, 0.98) #Zona de la cedula nueva
@@ -456,10 +465,7 @@ def capture_cedula_entrada_peatonal(
     Returns:
         dict con estado de la captura {'success': bool, 'file': str, 'size': int}
     """
-    ip = "192.168.1.3"
-    user = "admin"
-    password = "DMT_1990"
-    url = f"http://{ip}/cgi-bin/snapshot.cgi"
+    ip = CAMERA_IP
 
     output_file = None
     if save_file:
@@ -468,12 +474,14 @@ def capture_cedula_entrada_peatonal(
         output_file = os.path.join(output_dir, f"camara_cedula_entrada_peatonal_{timestamp}.jpg")
 
     try:
+        capture_started = time.perf_counter()
         response = SESSION.get(
-            url,
-            auth=HTTPDigestAuth(user, password),
-            timeout=(2, 6),
+            SNAPSHOT_URL,
+            auth=SNAPSHOT_AUTH,
+            timeout=SNAPSHOT_TIMEOUT,
             stream=False,
         )
+        capture_http_ms = int((time.perf_counter() - capture_started) * 1000)
 
         if response.status_code == 200 and len(response.content) > 1000:
             image_bytes_raw = response.content
@@ -512,6 +520,10 @@ def capture_cedula_entrada_peatonal(
                 "ocr_error": ocr_error,
                 "camera": "Camara Cedula Entrada Peatonal",
                 "ip": ip,
+                "timings": {
+                    "capture_http_ms": capture_http_ms,
+                    "capture_method": "http_snapshot_digest",
+                },
             }
 
         return {
@@ -521,6 +533,10 @@ def capture_cedula_entrada_peatonal(
             "camera": "Camara Cedula Entrada Peatonal",
             "ip": ip,
             "error": f"HTTP code: {response.status_code}",
+            "timings": {
+                "capture_http_ms": capture_http_ms,
+                "capture_method": "http_snapshot_digest",
+            },
         }
     except requests.ConnectTimeout:
         return {
