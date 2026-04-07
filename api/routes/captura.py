@@ -59,7 +59,8 @@ async def capture_usuario_entrada_vehicular(
 async def capture_cedula_entrada_vehicular(
     include_data_url: bool = False,
     include_image: bool = True,
-    response_mode: str = "json"
+    response_mode: str = "json",
+    draw_boxes: bool = False,
 ):
     """
     Captura imagen de la cédula (sin OCR)
@@ -67,7 +68,10 @@ async def capture_cedula_entrada_vehicular(
     - Retorna imagen en base64
     """
     return camera_service.capture_cedula_entrada_vehicular(
-        include_data_url, include_image, response_mode
+        include_data_url=include_data_url,
+        include_image=include_image,
+        response_mode=response_mode,
+        draw_boxes=draw_boxes,
     )
 
 
@@ -107,10 +111,39 @@ async def capture_usuario_entrada_peatonal(
 # ============ OCR ============
 
 @router.get("/extract/camara_cedula_entrada_vehicular")
-async def extract_cedula_data(imagen_cedula_base64: str):
+async def extract_cedula_data_get(imagen_cedula_base64: str):
     """
     Extrae datos OCR de una imagen de cédula enviada en base64
     - Entrada: imagen_cedula_base64 (query parameter)
     - Salida: cedula, nombres, apellidos y tiempos de OCR
     """
     return ocr_service.extract_cedula_from_base64(imagen_cedula_base64)
+
+
+@router.post("/extract/camara_cedula_entrada_vehicular")
+async def extract_cedula_data_post(payload: CedulaOCRRequest):
+    """
+    Extrae datos OCR de una imagen de cédula enviada en JSON
+    - Entrada: {"imagen_cedula_base64": "..."}
+    - Recomendado para evitar errores de longitud/encoding en query string
+    """
+    return ocr_service.extract_cedula_from_base64(payload.imagen_cedula_base64)
+
+
+@router.get("/extract/camara_cedula_entrada_vehicular/live")
+async def extract_cedula_data_live(
+    include_data_url: bool = False,
+    include_image: bool = True,
+    draw_boxes: bool = True,
+):
+    """
+    Captura cédula desde la cámara vehicular y ejecuta OCR en servidor.
+    - No requiere enviar base64 desde cliente.
+    """
+    return camera_service.capture_cedula_entrada_vehicular(
+        include_data_url=include_data_url,
+        include_image=include_image,
+        response_mode="json",
+        do_ocr=True,
+        draw_boxes=draw_boxes,
+    )

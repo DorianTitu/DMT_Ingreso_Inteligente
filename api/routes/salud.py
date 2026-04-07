@@ -29,7 +29,9 @@ async def root():
                 "/capture/camara_usuario_entrada_peatonal": "Capturar imagen de usuario entrada peatonal (192.168.1.224, alias)"
             },
             "ocr": {
-                "/extract/camara_cedula_entrada_vehicular": "Extraer datos OCR de una imagen base64"
+                "/extract/camara_cedula_entrada_vehicular [GET]": "Extraer datos OCR de una imagen base64 enviada por query string",
+                "/extract/camara_cedula_entrada_vehicular [POST]": "Extraer datos OCR de una imagen base64 enviada en JSON (recomendado)",
+                "/extract/camara_cedula_entrada_vehicular/live": "Capturar cédula vehicular desde cámara y ejecutar OCR en servidor"
             },
             "registro_vehicular": {
                 "/save/registro_vehicular": "Guardar registro completo de ingreso vehicular",

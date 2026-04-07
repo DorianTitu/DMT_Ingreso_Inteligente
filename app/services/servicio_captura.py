@@ -170,10 +170,12 @@ class ServicioCaptura:
         self,
         include_data_url: bool = False,
         include_image: bool = True,
-        response_mode: str = "json"
+        response_mode: str = "json",
+        do_ocr: bool = False,
+        draw_boxes: bool = False,
     ):
         """Captura imagen de cédula entrada vehicular (Camera250)"""
-        result = capture_camera250(self.output_dir, do_ocr=False)
+        result = capture_camera250(self.output_dir, do_ocr=do_ocr, draw_boxes=draw_boxes)
         if response_mode.lower() == "jpeg":
             return self.build_capture_jpeg_response(result, "Error en captura")
         return self.build_capture_response(

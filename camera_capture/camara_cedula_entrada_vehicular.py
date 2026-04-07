@@ -58,6 +58,13 @@ NOISE_NAME_KEYS = {
     'NACIMIENTO',
     'VENCIMIENTO',
 }
+NOISE_NAME_PREFIXES = (
+    'CONDICI',
+    'CIUDADA',
+    'NACIONA',
+    'NACIMI',
+    'VENCIMI',
+)
 
 # Recortes de trabajo para OCR (porcentaje sobre imagen recortada).
 # Se usan los dos recortes para extraer nombres/apellidos y cédula.
@@ -154,13 +161,38 @@ def _rect_pct_to_pixels(size: tuple[int, int], rect_pct: tuple[float, float, flo
 
 
 def _dibujar_cuadros_ocr(ruta_imagen: str, cedula_source: str | None = None) -> dict | None:
-    """Dibuja los dos recortes usados por OCR sobre la imagen final."""
+    """Dibuja recorte base y zonas OCR reales sobre la imagen original."""
     try:
         with Image.open(ruta_imagen) as img:
-            zone_1_px = _rect_pct_to_pixels(img.size, CROP_ZONE_1_PCT)
-            zone_2_px = _rect_pct_to_pixels(img.size, CROP_ZONE_2_PCT)
+            width, height = img.size
+            base_top = int(height * 0.12)
+            base_left = int(width * 0.2)
+            base_right = width
+            base_bottom = height
+            base_crop_px = (base_left, base_top, base_right, base_bottom)
+
+            cropped_width = max(1, base_right - base_left)
+            cropped_height = max(1, base_bottom - base_top)
+
+            zone_1_local = _rect_pct_to_pixels((cropped_width, cropped_height), CROP_ZONE_1_PCT)
+            zone_2_local = _rect_pct_to_pixels((cropped_width, cropped_height), CROP_ZONE_2_PCT)
+
+            zone_1_px = (
+                base_left + zone_1_local[0],
+                base_top + zone_1_local[1],
+                base_left + zone_1_local[2],
+                base_top + zone_1_local[3],
+            )
+            zone_2_px = (
+                base_left + zone_2_local[0],
+                base_top + zone_2_local[1],
+                base_left + zone_2_local[2],
+                base_top + zone_2_local[3],
+            )
             draw = ImageDraw.Draw(img)
 
+            # Amarillo: recorte base antes de definir las zonas OCR.
+            draw.rectangle(base_crop_px, outline=(255, 215, 0), width=5)
             color_1 = (0, 200, 0) if cedula_source == 'crop_zone_1' else (255, 0, 0)
             color_2 = (0, 200, 0) if cedula_source == 'crop_zone_2' else (255, 0, 0)
             draw.rectangle(zone_1_px, outline=color_1, width=5)
@@ -168,6 +200,7 @@ def _dibujar_cuadros_ocr(ruta_imagen: str, cedula_source: str | None = None) -> 
 
             img.save(ruta_imagen, quality=95)
             return {
+                'base_crop_px': base_crop_px,
                 'crop_zone_1_px': zone_1_px,
                 'crop_zone_2_px': zone_2_px,
                 'cedula_source': cedula_source,
@@ -200,7 +233,9 @@ def _sanitize_nombres(nombres: str | None) -> str | None:
     tokens = []
     for token in _normalize_spaces(nombres).split(' '):
         key = _normalize_key(token)
-        if not key or key in NOISE_NAME_KEYS:
+        if not key:
+            continue
+        if key in NOISE_NAME_KEYS or any(key.startswith(prefix) for prefix in NOISE_NAME_PREFIXES):
             continue
         tokens.append(token)
 
@@ -218,7 +253,9 @@ def _sanitize_apellidos(apellidos: str | None) -> str | None:
     tokens = []
     for token in _normalize_spaces(apellidos).split(' '):
         key = _normalize_key(token)
-        if not key or key in NOISE_NAME_KEYS:
+        if not key:
+            continue
+        if key in NOISE_NAME_KEYS or any(key.startswith(prefix) for prefix in NOISE_NAME_PREFIXES):
             continue
         tokens.append(token)
 
@@ -229,7 +266,9 @@ def _is_noise_name_line(text: str) -> bool:
     line_key = _normalize_key(text)
     if not line_key:
         return True
-    return any(noise in line_key for noise in NOISE_NAME_KEYS)
+    if any(noise in line_key for noise in NOISE_NAME_KEYS):
+        return True
+    return any(prefix in line_key for prefix in NOISE_NAME_PREFIXES)
 
 
 def _is_probable_header(line_key: str) -> bool:
@@ -496,7 +535,11 @@ def extract_cedula_data_from_bytes(image_bytes: bytes) -> dict:
         return extract_cedula_data_from_pil(image.copy())
 
 
-def capture_camera250(output_dir: str = "snapshots_camaras", do_ocr: bool = True) -> dict:
+def capture_camera250(
+    output_dir: str = "snapshots_camaras",
+    do_ocr: bool = True,
+    draw_boxes: bool = False,
+) -> dict:
     """
     Captura foto de Camera250 (cedula entrada vehicular)
     
@@ -556,7 +599,7 @@ def capture_camera250(output_dir: str = "snapshots_camaras", do_ocr: bool = True
                         ocr_error = str(ocr_exc)
 
                 ocr_boxes_preview = None
-                if DRAW_OCR_BOXES:
+                if DRAW_OCR_BOXES or draw_boxes:
                     ocr_boxes_preview = _dibujar_cuadros_ocr(
                         output_file,
                         ocr_data.get('cedula_source') if isinstance(ocr_data, dict) else None,
@@ -583,6 +626,7 @@ def capture_camera250(output_dir: str = "snapshots_camaras", do_ocr: bool = True
                 }
 
                 if ocr_boxes_preview is not None:
+                    response['crop_boxes'] = ocr_boxes_preview
                     response['ocr_boxes_preview'] = ocr_boxes_preview
 
                 return response
