@@ -14,6 +14,9 @@ from camera_capture.camara_cedula_entrada_vehicular import (
     warmup_cedula_ocr_reader,
     extract_cedula_data_from_bytes,
 )
+from camera_capture.camara_cedula_entrada_peatonal import (
+    extract_cedula_data_from_bytes as extract_cedula_data_from_bytes_peatonal,
+)
 
 
 class ServicioOCR:
@@ -81,5 +84,27 @@ class ServicioOCR:
                     "endpoint_total_ms": total_ms
                 },
                 "message": "Extraccion OCR exitosa"
+            }
+        )
+
+    @staticmethod
+    def extract_cedula_peatonal_from_base64(base64_data: str) -> JSONResponse:
+        """Procesa OCR peatonal desde base64 y retorna resultado uniforme"""
+        started = time.perf_counter()
+
+        image_bytes = ServicioOCR._decode_base64_image(base64_data)
+
+        ocr_data = extract_cedula_data_from_bytes_peatonal(image_bytes)
+        total_ms = int((time.perf_counter() - started) * 1000)
+
+        return JSONResponse(
+            status_code=200,
+            content={
+                "success": True,
+                "ocr_data": ocr_data,
+                "timings": {
+                    "endpoint_total_ms": total_ms
+                },
+                "message": "Extraccion OCR peatonal exitosa"
             }
         )

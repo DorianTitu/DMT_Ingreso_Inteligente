@@ -84,13 +84,23 @@ async def capture_cedula_entrada_peatonal(
     response_mode: str = "json"
 ):
     """
-    Captura imagen de cámara cédula entrada peatonal
+    Captura imagen de cámara cédula entrada peatonal sin ejecutar OCR
     - IP: 192.168.1.3
     - Protocolo: HTTP Digest
     """
     return camera_service.capture_cedula_entrada_peatonal(
         include_data_url, include_image, response_mode
     )
+
+
+@router.post("/extract/camara_cedula_entrada_peatonal")
+async def extract_cedula_data_peatonal_post(payload: CedulaOCRRequest):
+    """
+    Extrae datos OCR peatonal de una imagen de cédula enviada en JSON
+    - Entrada: {"imagen_cedula_base64": "..."}
+    - Recomendado para evitar errores de longitud/encoding en query string
+    """
+    return ocr_service.extract_cedula_peatonal_from_base64(payload.imagen_cedula_base64)
 
 
 @router.get("/capture/camara_usuario_entrada_peatonal")

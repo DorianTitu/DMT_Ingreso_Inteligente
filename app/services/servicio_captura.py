@@ -191,12 +191,17 @@ class ServicioCaptura:
         self,
         include_data_url: bool = False,
         include_image: bool = True,
-        response_mode: str = "json"
+        response_mode: str = "json",
+        do_ocr: bool = False,
     ):
         """Captura imagen de cédula entrada peatonal (192.168.1.3)"""
         # Evita I/O a disco para respuestas JSON: ya tenemos bytes en memoria.
         save_file = False
-        result = capture_cedula_entrada_peatonal(self.output_dir, save_file=save_file)
+        result = capture_cedula_entrada_peatonal(
+            self.output_dir,
+            save_file=save_file,
+            do_ocr=do_ocr,
+        )
         if response_mode.lower() == "jpeg":
             return self.build_capture_jpeg_response(
                 result,

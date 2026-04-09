@@ -46,6 +46,12 @@ CROP_ZONE_4_PCT = (0.37, 0.13, 0.65, 0.48) #Zona de la cedula nueva
 DRAW_CROP_BOXES = True
 BOX_WIDTH = 5
 ENABLE_PRECISE_NAME_FALLBACK = False
+OCR_CEDULA_ALLOWLIST = '0123456789NUI.NO-'
+OCR_NAME_ALLOWLIST = 'ABCDEFGHIJKLMNOPQRSTUVWXYZÁÉÍÓÚÜÑabcdefghijklmnopqrstuvwxyzáéíóúüñ'
+ZONE_4_OCR_MAX_WIDTH = 360
+ZONE_4_OCR_CANVAS_SIZE = 520
+ZONE_4_OCR_BATCH_SIZE = 1
+ZONE_4_OCR_MIN_SIZE = 18
 
 
 def _rect_pct_to_pixels(size: tuple[int, int], rect_pct: tuple[float, float, float, float]) -> tuple[int, int, int, int]:
@@ -60,6 +66,38 @@ def _rect_pct_to_pixels(size: tuple[int, int], rect_pct: tuple[float, float, flo
     top = max(0, min(height, min(y1, y2)))
     bottom = max(0, min(height, max(y1, y2)))
     return (left, top, right, bottom)
+
+
+def _preprocess_zone_4_for_ocr(image: Image.Image) -> np.ndarray:
+    """Reduce agresivamente el recorte 4 para acelerar la lectura de nombres."""
+    width, height = image.size
+    if width > ZONE_4_OCR_MAX_WIDTH:
+        ratio = ZONE_4_OCR_MAX_WIDTH / float(width)
+        image = image.resize((ZONE_4_OCR_MAX_WIDTH, int(height * ratio)), Image.BILINEAR)
+
+    gray = image.convert('L')
+    gray = ImageOps.autocontrast(gray)
+    return np.array(gray)
+
+
+def _ocr_lines_zone_4(reader, image_array: np.ndarray, allowlist: str | None = None) -> list[str]:
+    lines = reader.readtext(
+        image_array,
+        detail=0,
+        paragraph=False,
+        decoder='greedy',
+        beamWidth=1,
+        batch_size=ZONE_4_OCR_BATCH_SIZE,
+        workers=0,
+        min_size=ZONE_4_OCR_MIN_SIZE,
+        text_threshold=0.60,
+        low_text=0.40,
+        link_threshold=0.40,
+        canvas_size=ZONE_4_OCR_CANVAS_SIZE,
+        mag_ratio=1.0,
+        allowlist=allowlist,
+    )
+    return [' '.join(line.split()) for line in lines if ' '.join(line.split())]
 
 
 def _draw_crop_boxes(image_bytes: bytes, cedula_source: str | None = None) -> tuple[bytes, dict] | tuple[None, None]:
@@ -130,9 +168,16 @@ def _extract_ocr_with_zone_fallback(image_bytes: bytes) -> dict:
 
     reader = _get_ocr_reader()
     ocr_started = time.perf_counter()
+    ocr_steps_ms: dict[str, int] = {}
 
-    # OCR de zona 1 para primer intento de cedula.
-    zone_1_lines = _ocr_lines(reader, _preprocess_image_for_ocr(zone_1_img))
+    # OCR de zona 1 optimizado para cédula: solo caracteres esperados.
+    zone_1_started = time.perf_counter()
+    zone_1_lines = _ocr_lines(
+        reader,
+        _preprocess_image_for_ocr(zone_1_img),
+        allowlist=OCR_CEDULA_ALLOWLIST,
+    )
+    ocr_steps_ms['zone_1_ms'] = int((time.perf_counter() - zone_1_started) * 1000)
 
     def _clean_words(line: str) -> str:
         cleaned = re.sub(r"[^A-Za-zÁÉÍÓÚÜÑáéíóúüñ\s]", " ", line)
@@ -314,23 +359,37 @@ def _extract_ocr_with_zone_fallback(image_bytes: bytes) -> dict:
 
         # Si la cedula esta en el recorte 1, los nombres salen separados en el recorte 4.
         # OCR simple: suficiente para extraer 2 lineas de nombres/apellidos.
-        zone_4_lines = _ocr_lines(reader, _preprocess_image_for_ocr(zone_4_img))
+        zone_4_started = time.perf_counter()
+        zone_4_lines = _ocr_lines_zone_4(
+            reader,
+            _preprocess_zone_4_for_ocr(zone_4_img),
+            allowlist=OCR_NAME_ALLOWLIST,
+        )
+        ocr_steps_ms['zone_4_ms'] = int((time.perf_counter() - zone_4_started) * 1000)
         zone_4_lines_debug = zone_4_lines
         apellidos, nombres = _extract_zone_4_separated_names(zone_4_lines)
     else:
         # Si no aparece en el recorte 1, se busca la cedula en el recorte 3
         # y los nombres/apellidos en el recorte 2.
+        zone_3_started = time.perf_counter()
         zone_3_lines = _ocr_lines(
             reader,
             _preprocess_image_for_ocr(zone_3_img),
             allowlist='0123456789NUI.NO-'
         )
+        ocr_steps_ms['zone_3_ms'] = int((time.perf_counter() - zone_3_started) * 1000)
         cedula = _extract_cedula_zone_3(zone_3_lines)
         if cedula:
             cedula_source = "crop_zone_3"
             flow_route = "found_in_zone_3"
 
-        zone_2_lines = _ocr_lines(reader, _preprocess_image_for_ocr(zone_2_img))
+        zone_2_started = time.perf_counter()
+        zone_2_lines = _ocr_lines(
+            reader,
+            _preprocess_image_for_ocr(zone_2_img),
+            allowlist=OCR_NAME_ALLOWLIST,
+        )
+        ocr_steps_ms['zone_2_ms'] = int((time.perf_counter() - zone_2_started) * 1000)
         # OCR simple: suficiente para extraer 2 lineas de nombres/apellidos.
         apellidos, nombres = _extract_combined_names(zone_2_lines)
 
@@ -353,6 +412,7 @@ def _extract_ocr_with_zone_fallback(image_bytes: bytes) -> dict:
             "parse_ms": 0,
             "total_ms": total_ms,
             "cedula_fallback_used": False,
+            'ocr_steps_ms': ocr_steps_ms,
         },
         "debug_zone_4_lines": zone_4_lines_debug,
     }
@@ -360,10 +420,15 @@ def _extract_ocr_with_zone_fallback(image_bytes: bytes) -> dict:
     return result
 
 
+def extract_cedula_data_from_bytes(image_bytes: bytes) -> dict:
+    """Ejecuta OCR peatonal sobre bytes de imagen."""
+    return _extract_ocr_with_zone_fallback(image_bytes)
+
+
 def capture_cedula_entrada_peatonal(
     output_dir: str = "snapshots_camaras",
     save_file: bool = True,
-    do_ocr: bool = True,
+    do_ocr: bool = False,
 ) -> dict:
     """
     Captura foto de la camara de cedula entrada peatonal.
