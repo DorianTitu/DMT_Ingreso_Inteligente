@@ -45,7 +45,7 @@ CROP_ZONE_4_PCT = (0.37, 0.13, 0.65, 0.48) #Zona de la cedula nueva
 
 DRAW_CROP_BOXES = True
 BOX_WIDTH = 5
-ENABLE_PRECISE_NAME_FALLBACK = True
+ENABLE_PRECISE_NAME_FALLBACK = False
 
 
 def _rect_pct_to_pixels(size: tuple[int, int], rect_pct: tuple[float, float, float, float]) -> tuple[int, int, int, int]:
@@ -137,34 +137,6 @@ def _extract_ocr_with_zone_fallback(image_bytes: bytes) -> dict:
     def _clean_words(line: str) -> str:
         cleaned = re.sub(r"[^A-Za-zÁÉÍÓÚÜÑáéíóúüñ\s]", " ", line)
         return " ".join(cleaned.split()).upper()
-
-    def _ocr_lines_precise(reader_obj, image_obj: Image.Image, allowlist: str | None = None) -> list[str]:
-        # Segundo barrido mas preciso: conserva mas detalle y baja umbral de deteccion.
-        width, height = image_obj.size
-        upscale = 1.5 if max(width, height) < 550 else 1.2
-        resized = image_obj.resize(
-            (int(width * upscale), int(height * upscale)),
-            Image.BICUBIC,
-        )
-        gray = ImageOps.autocontrast(resized.convert("L"))
-        arr = np.array(gray)
-        lines = reader_obj.readtext(
-            arr,
-            detail=0,
-            paragraph=False,
-            decoder='beamsearch',
-            beamWidth=5,
-            batch_size=1,
-            workers=0,
-            min_size=10,
-            text_threshold=0.45,
-            low_text=0.25,
-            link_threshold=0.25,
-            canvas_size=1200,
-            mag_ratio=1.2,
-            allowlist=allowlist,
-        )
-        return [" ".join(str(line).split()) for line in lines if " ".join(str(line).split())]
 
     def _is_name_noise_or_header(line: str) -> bool:
         key = _clean_words(line)
@@ -341,14 +313,10 @@ def _extract_ocr_with_zone_fallback(image_bytes: bytes) -> dict:
         flow_route = "found_in_zone_1"
 
         # Si la cedula esta en el recorte 1, los nombres salen separados en el recorte 4.
+        # OCR simple: suficiente para extraer 2 lineas de nombres/apellidos.
         zone_4_lines = _ocr_lines(reader, _preprocess_image_for_ocr(zone_4_img))
         zone_4_lines_debug = zone_4_lines
         apellidos, nombres = _extract_zone_4_separated_names(zone_4_lines)
-        if ENABLE_PRECISE_NAME_FALLBACK and (not apellidos or not nombres):
-            zone_4_lines_precise = _ocr_lines_precise(reader, zone_4_img)
-            apellidos_p, nombres_p = _extract_zone_4_separated_names(zone_4_lines_precise)
-            apellidos = apellidos or apellidos_p
-            nombres = nombres or nombres_p
     else:
         # Si no aparece en el recorte 1, se busca la cedula en el recorte 3
         # y los nombres/apellidos en el recorte 2.
@@ -363,12 +331,8 @@ def _extract_ocr_with_zone_fallback(image_bytes: bytes) -> dict:
             flow_route = "found_in_zone_3"
 
         zone_2_lines = _ocr_lines(reader, _preprocess_image_for_ocr(zone_2_img))
+        # OCR simple: suficiente para extraer 2 lineas de nombres/apellidos.
         apellidos, nombres = _extract_combined_names(zone_2_lines)
-        if ENABLE_PRECISE_NAME_FALLBACK and (not apellidos or not nombres):
-            zone_2_lines_precise = _ocr_lines_precise(reader, zone_2_img)
-            apellidos_p, nombres_p = _extract_combined_names(zone_2_lines_precise)
-            apellidos = apellidos or apellidos_p
-            nombres = nombres or nombres_p
 
     apellidos = _sanitize_apellidos(apellidos)
     nombres = _sanitize_nombres(nombres)
