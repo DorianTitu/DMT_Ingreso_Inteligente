@@ -37,9 +37,9 @@ SNAPSHOT_TIMEOUT = (1.5, 4.0)
 
 # Zonas editables en porcentaje (x1, y1, x2, y2) para ajustar recortes visualmente.
 CROP_ZONE_1_PCT = (0.12, 0.80, 0.40, 0.98) #Zona de la cedula nueva
-CROP_ZONE_2_PCT = (0.38, 0.31, 0.70, 0.55) #Zona de nombre y apellido cedula antigua
+CROP_ZONE_2_PCT = (0.38, 0.31, 0.70, 0.59) #Zona de nombre y apellido cedula antigua
 CROP_ZONE_3_PCT = (0.71, 0.24, 0.99, 0.50) #Zona de la cedula antigua
-CROP_ZONE_4_PCT = (0.37, 0.13, 0.65, 0.42) #Zona de la cedula nueva
+CROP_ZONE_4_PCT = (0.37, 0.13, 0.65, 0.48) #Zona de la cedula nueva
 
 
 
@@ -188,11 +188,11 @@ def _extract_ocr_with_zone_fallback(image_bytes: bytes) -> dict:
             if noise in key:
                 return True
         
-        # Verificación robusta ante OCR parcial: detecta prefijos
-        # Si la línea contiene al menos 6 caracteres del prefijo de una palabra de ruido
+        # Verificación robusta ante OCR parcial: detecta prefijos de 4+ caracteres
+        # Captura variantes parciales como: COND, NACI, REGI, CIUDA, NACION, etc.
         for noise in noise_keys:
-            if len(noise) >= 6:
-                prefix = noise[:6]
+            if len(noise) >= 4:
+                prefix = noise[:4]
                 if prefix in key:
                     return True
         
@@ -200,38 +200,33 @@ def _extract_ocr_with_zone_fallback(image_bytes: bytes) -> dict:
 
     def _extract_names_following_pattern(lines: list[str]) -> tuple[str | None, str | None]:
         """
-        Regla de mapeo solicitada:
-        - Debajo de NOMBRES: una linea con nombres.
-        - Encima de NOMBRES: dos lineas de apellidos.
-        - Validacion: comparar apellidos contra las lineas bajo el header APELLIDOS.
+        Regla de mapeo simplificada:
+        - Debajo de NOMBRES: nombres.
+        - Las dos líneas válidas inmediatamente encima de NOMBRES: apellidos.
         """
         nombres_idx = -1
-        apellidos_label_idx = -1
 
         for idx, line in enumerate(lines):
             key = _clean_words(line)
             if nombres_idx < 0 and "NOMBRES" in key:
                 nombres_idx = idx
-            if apellidos_label_idx < 0 and "APELLIDOS" in key and "NOMBRES" not in key:
-                apellidos_label_idx = idx
 
         if nombres_idx < 0:
             return _extract_name_parts(lines)
 
-        # 1) NOMBRES: primera linea valida inmediatamente debajo del header NOMBRES.
+        # 1) NOMBRES: primera línea válida debajo del header NOMBRES.
         nombres_val = None
         for line in lines[nombres_idx + 1:]:
             key = _clean_words(line)
             if not key:
                 continue
             if _is_name_noise_or_header(line):
-                if "NOMBRES" in key:
-                    continue
-                break
+                continue
             nombres_val = key
             break
 
-        # 2) APELLIDOS (patron principal): dos lineas validas encima de NOMBRES.
+        # 2) APELLIDOS: las dos líneas válidas inmediatamente encima de NOMBRES,
+        #    descartando ruido (CONDICION, APELLIDOS, REGISTRO, etc.)
         apellidos_above: list[str] = []
         for line in reversed(lines[:nombres_idx]):
             key = _clean_words(line)
@@ -242,57 +237,7 @@ def _extract_ocr_with_zone_fallback(image_bytes: bytes) -> dict:
                 break
         apellidos_above.reverse()
 
-        # 3) APELLIDOS (validacion): lineas bajo el header APELLIDOS hasta NOMBRES.
-        apellidos_below_label: list[str] = []
-        if apellidos_label_idx >= 0:
-            for line in lines[apellidos_label_idx + 1:]:
-                key = _clean_words(line)
-                if not key:
-                    continue
-                if "NOMBRES" in key:
-                    break
-                if _is_name_noise_or_header(line):
-                    continue
-                apellidos_below_label.append(key)
-                if len(apellidos_below_label) == 2:
-                    break
-
-        def _norm_compare(values: list[str]) -> str:
-            return " ".join(values).replace(" ", "")
-
-        def _token_set(values: list[str]) -> set[str]:
-            tokens: set[str] = set()
-            for value in values:
-                for token in value.split():
-                    if token:
-                        tokens.add(token)
-            return tokens
-
-        def _token_overlap_ratio(a_vals: list[str], b_vals: list[str]) -> float:
-            a_tokens = _token_set(a_vals)
-            b_tokens = _token_set(b_vals)
-            if not a_tokens or not b_tokens:
-                return 0.0
-            inter = len(a_tokens.intersection(b_tokens))
-            base = max(len(a_tokens), len(b_tokens))
-            return inter / base if base else 0.0
-
-        apellidos_val = None
-        if apellidos_above and apellidos_below_label:
-            if _norm_compare(apellidos_above) == _norm_compare(apellidos_below_label):
-                apellidos_val = " ".join(apellidos_above)
-            else:
-                # Validacion no estricta: permite OCR con errores parciales.
-                overlap = _token_overlap_ratio(apellidos_above, apellidos_below_label)
-                if overlap >= 0.5:
-                    apellidos_val = " ".join(apellidos_below_label)
-                else:
-                    # Si no pasa validacion, se evita recuperar apellidos poco confiables.
-                    apellidos_val = None
-        elif apellidos_above:
-            apellidos_val = " ".join(apellidos_above)
-        elif apellidos_below_label:
-            apellidos_val = " ".join(apellidos_below_label)
+        apellidos_val = " ".join(apellidos_above) if apellidos_above else None
 
         if not apellidos_val and not nombres_val:
             return _extract_name_parts(lines)
