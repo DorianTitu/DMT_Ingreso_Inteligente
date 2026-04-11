@@ -81,7 +81,7 @@ async def capture_cedula_entrada_vehicular(
 async def capture_cedula_entrada_peatonal(
     include_data_url: bool = False,
     include_image: bool = True,
-    response_mode: str = "json"
+    response_mode: str = "jpeg"
 ):
     """
     Captura imagen de cámara cédula entrada peatonal sin ejecutar OCR
@@ -90,6 +90,19 @@ async def capture_cedula_entrada_peatonal(
     """
     return camera_service.capture_cedula_entrada_peatonal(
         include_data_url, include_image, response_mode
+    )
+
+
+@router.get("/capture/camara_cedula_entrada_peatonal/jpeg")
+async def capture_cedula_entrada_peatonal_jpeg():
+    """
+    Captura la imagen peatonal y la devuelve en JPEG directo.
+    - Más rápido que JSON/base64 cuando el front solo necesita la imagen.
+    """
+    return camera_service.capture_cedula_entrada_peatonal(
+        include_data_url=False,
+        include_image=False,
+        response_mode="jpeg",
     )
 
 
@@ -107,7 +120,7 @@ async def extract_cedula_data_peatonal_post(payload: CedulaOCRRequest):
 async def capture_usuario_entrada_peatonal(
     include_data_url: bool = False,
     include_image: bool = True,
-    response_mode: str = "json"
+    response_mode: str = "jpeg"
 ):
     """
     Captura imagen de usuario entrada peatonal (192.168.1.224)
@@ -115,6 +128,19 @@ async def capture_usuario_entrada_peatonal(
     """
     return camera_service.capture_usuario_entrada_peatonal(
         include_data_url, include_image, response_mode
+    )
+
+
+@router.get("/capture/camara_usuario_entrada_peatonal/jpeg")
+async def capture_usuario_entrada_peatonal_jpeg():
+    """
+    Captura la imagen del usuario peatonal y la devuelve en JPEG directo.
+    - Más rápido que JSON/base64 cuando el front solo necesita la imagen.
+    """
+    return camera_service.capture_usuario_entrada_peatonal(
+        include_data_url=False,
+        include_image=False,
+        response_mode="jpeg",
     )
 
 

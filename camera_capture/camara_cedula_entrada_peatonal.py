@@ -43,7 +43,7 @@ CROP_ZONE_4_PCT = (0.37, 0.13, 0.65, 0.48) #Zona de la cedula nueva
 
 
 
-DRAW_CROP_BOXES = True
+DRAW_CROP_BOXES = False
 BOX_WIDTH = 5
 ENABLE_PRECISE_NAME_FALLBACK = False
 OCR_CEDULA_ALLOWLIST = '0123456789NUI.NO-'
@@ -100,6 +100,42 @@ def _ocr_lines_zone_4(reader, image_array: np.ndarray, allowlist: str | None = N
     return [' '.join(line.split()) for line in lines if ' '.join(line.split())]
 
 
+def _normalize_header_key(text: str) -> str:
+    key = re.sub(r'[^A-Za-zÁÉÍÓÚÜÑáéíóúüñ\s]', ' ', text)
+    key = ' '.join(key.split()).upper()
+    return key.replace('MOMBRES', 'NOMBRES').replace('N0MBRES', 'NOMBRES').replace('APELLIDOSY', 'APELLIDOS Y')
+
+
+def _is_peatonal_name_noise(text: str) -> bool:
+    key = _normalize_header_key(text)
+    if not key:
+        return True
+
+    noise_tokens = (
+        'APELLIDOS',
+        'NOMBRES',
+        'NOMBRES Y APELLIDOS',
+        'APELLIDOS Y NOMBRES',
+        'CEDULA',
+        'CIUDADAN',
+        'REGISTRO',
+        'CONDICION',
+        'CONDI',
+        'CALLE',
+        'NACIONALIDAD',
+        'SEXO',
+        'NACIMIENTO',
+        'DIRECCION',
+        'GENERAL',
+    )
+
+    for noise in noise_tokens:
+        if noise in key:
+            return True
+
+    return False
+
+
 def _draw_crop_boxes(image_bytes: bytes, cedula_source: str | None = None) -> tuple[bytes, dict] | tuple[None, None]:
     try:
         with Image.open(BytesIO(image_bytes)) as img:
@@ -117,6 +153,12 @@ def _draw_crop_boxes(image_bytes: bytes, cedula_source: str | None = None) -> tu
                 active_zones = {"crop_zone_2", "crop_zone_3"}
                 draw.rectangle(zone_2_px, outline=(0, 200, 0), width=BOX_WIDTH)
                 draw.rectangle(zone_3_px, outline=(0, 200, 0), width=BOX_WIDTH)
+            elif cedula_source in (None, "all"):
+                active_zones = {"crop_zone_1", "crop_zone_2", "crop_zone_3", "crop_zone_4"}
+                draw.rectangle(zone_1_px, outline=(255, 215, 0), width=BOX_WIDTH)
+                draw.rectangle(zone_2_px, outline=(255, 215, 0), width=BOX_WIDTH)
+                draw.rectangle(zone_3_px, outline=(255, 215, 0), width=BOX_WIDTH)
+                draw.rectangle(zone_4_px, outline=(255, 215, 0), width=BOX_WIDTH)
             else:
                 output = BytesIO()
                 img.save(output, format="JPEG", quality=95)
@@ -224,35 +266,36 @@ def _extract_ocr_with_zone_fallback(image_bytes: bytes) -> dict:
         nombres_idx = -1
 
         for idx, line in enumerate(lines):
-            key = _clean_words(line)
+            key = _normalize_header_key(line)
             if nombres_idx < 0 and "NOMBRES" in key:
                 nombres_idx = idx
 
         if nombres_idx < 0:
             return _extract_name_parts(lines)
 
-        # 1) NOMBRES: primera línea válida debajo del header NOMBRES.
+        # 1) NOMBRES: primera línea válida debajo del header NOMBRES (ventana local).
         nombres_val = None
-        for line in lines[nombres_idx + 1:]:
-            key = _clean_words(line)
+        for line in lines[nombres_idx + 1:nombres_idx + 4]:
+            key = _normalize_header_key(line)
             if not key:
                 continue
-            if _is_name_noise_or_header(line):
+            if _is_peatonal_name_noise(line):
                 continue
             nombres_val = key
             break
 
-        # 2) APELLIDOS: las dos líneas válidas inmediatamente encima de NOMBRES,
-        #    descartando ruido (CONDICION, APELLIDOS, REGISTRO, etc.)
+        # 2) APELLIDOS: usa las dos líneas inmediatamente encima de NOMBRES
+        #    (ventana corta para evitar arrastrar texto lejano como encabezados superiores).
         apellidos_above: list[str] = []
-        for line in reversed(lines[:nombres_idx]):
-            key = _clean_words(line)
-            if not key or _is_name_noise_or_header(line):
+        upper_start = max(0, nombres_idx - 2)
+        for line in lines[upper_start:nombres_idx]:
+            key = _normalize_header_key(line)
+            if not key:
+                continue
+            # Excluye solo headers explícitos para mantener el mapeo local pedido.
+            if 'NOMBRES' in key or 'APELLIDOS' in key:
                 continue
             apellidos_above.append(key)
-            if len(apellidos_above) == 2:
-                break
-        apellidos_above.reverse()
 
         apellidos_val = " ".join(apellidos_above) if apellidos_above else None
 
@@ -473,9 +516,9 @@ def capture_cedula_entrada_peatonal(
             if isinstance(ocr_data, dict):
                 draw_route = "found_in_zone_1" if ocr_data.get("cedula_source") == "crop_zone_1" else "not_found_in_zone_1"
 
-            should_draw_boxes = draw_route in {"found_in_zone_1", "not_found_in_zone_1"}
-            if DRAW_CROP_BOXES and should_draw_boxes:
-                boxed_bytes, crop_boxes = _draw_crop_boxes(image_bytes, draw_route)
+            if DRAW_CROP_BOXES:
+                draw_target = draw_route if draw_route in {"found_in_zone_1", "not_found_in_zone_1"} else "all"
+                boxed_bytes, crop_boxes = _draw_crop_boxes(image_bytes, draw_target)
                 if boxed_bytes:
                     image_bytes = boxed_bytes
 

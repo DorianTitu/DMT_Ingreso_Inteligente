@@ -121,6 +121,15 @@ class ServicioCaptura:
             'X-Camera-IP': str(result.get('ip', '')),
             'X-Temp-File-Removed': str(temp_file_removed).lower(),
         }
+
+        timings = result.get('timings') or {}
+        if 'capture_http_ms' in timings:
+            headers['X-Capture-Http-Ms'] = str(timings.get('capture_http_ms'))
+        if 'capture_method' in timings:
+            headers['X-Capture-Method'] = str(timings.get('capture_method'))
+        if 'rtsp_fallback_ms' in timings:
+            headers['X-RTSP-Fallback-Ms'] = str(timings.get('rtsp_fallback_ms'))
+
         return Response(content=image_bytes, media_type='image/jpeg', headers=headers)
     
     # ============ CAPTURA VEHICULAR ============
