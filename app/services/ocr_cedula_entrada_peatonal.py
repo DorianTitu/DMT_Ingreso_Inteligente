@@ -10,7 +10,7 @@ from io import BytesIO
 import numpy as np
 from PIL import Image, ImageDraw, ImageOps
 
-from app.services.ocr_cedula_entrada_vehicular import (
+from app.services.ocr_cedula_common import (
     _extract_cedula,
     _extract_name_parts,
     _get_ocr_reader,

@@ -18,7 +18,6 @@ from camera_capture import (
 from camera_capture.camara_usuario_entrada_vehicular import capture_camera3 as capture_usuario_entrada_vehicular
 from camera_capture.camara_usuario_entrada_peatonal import capture_camera3 as capture_usuario_entrada_peatonal
 from app.services.ocr_cedula_entrada_vehicular import (
-    draw_ocr_boxes_on_bytes,
     extract_cedula_data_from_bytes,
 )
 from app.services.ocr_cedula_entrada_peatonal import (
@@ -100,7 +99,13 @@ class ServicioCaptura:
                 "image_base64": image_base64,
                 "image_data_url": image_data_url,
                 "crop_boxes": result.get('crop_boxes'),
+                "capture_crop_box_px": result.get('capture_crop_box_px'),
+                "capture_original_size_px": result.get('capture_original_size_px'),
+                "capture_cropped_size_px": result.get('capture_cropped_size_px'),
+                "capture_crop_box_pct": result.get('capture_crop_box_pct'),
                 "ocr_data": result.get('ocr_data'),
+                "ocr_detected": result.get('ocr_detected'),
+                "ocr_crops": result.get('ocr_crops'),
                 "ocr_error": result.get('ocr_error'),
                 "timings": {
                     **(result.get('timings') or {}),
@@ -189,6 +194,7 @@ class ServicioCaptura:
         response_mode: str = "json",
         do_ocr: bool = False,
         draw_boxes: bool = False,
+        include_ocr_crops: bool = False,
     ):
         """Captura imagen de cédula entrada vehicular (Camera250)"""
         # Igual que peatonal: prioriza bytes en memoria para minimizar I/O en disco.
@@ -199,18 +205,13 @@ class ServicioCaptura:
             try:
                 image_bytes = self._extract_image_bytes(result)
                 ocr_data = extract_cedula_data_from_bytes(image_bytes)
-                result['ocr_data'] = ocr_data
+                result['ocr_data'] = {
+                    'cedula': ocr_data.get('cedula') if isinstance(ocr_data, dict) else None,
+                    'nombres': ocr_data.get('nombres') if isinstance(ocr_data, dict) else None,
+                    'apellidos': ocr_data.get('apellidos') if isinstance(ocr_data, dict) else None,
+                }
+                result['ocr_detected'] = result['ocr_data']
                 result['ocr_error'] = None
-
-                if draw_boxes:
-                    boxed_bytes, crop_boxes = draw_ocr_boxes_on_bytes(
-                        image_bytes,
-                        ocr_data.get('cedula_source') if isinstance(ocr_data, dict) else None,
-                    )
-                    if boxed_bytes:
-                        result['image_bytes'] = boxed_bytes
-                        result['crop_boxes'] = crop_boxes
-                        result['ocr_boxes_preview'] = crop_boxes
             except Exception as exc:
                 ocr_error = str(exc)
             if ocr_error:

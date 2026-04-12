@@ -26,13 +26,16 @@ SNAPSHOT_TIMEOUT = (1.5, 4.0)
 
 # Recorte general de captura vehicular.
 # Ajusta estos valores para calibrar el recorte base.
-GENERAL_CROP_TOP_PCT = 0.12
-GENERAL_CROP_LEFT_PCT = 0.08
-GENERAL_CROP_RIGHT_PCT = 0.95
+GENERAL_CROP_TOP_PCT = 0.24
+GENERAL_CROP_LEFT_PCT = 0.16
+GENERAL_CROP_RIGHT_PCT = 0.90
 GENERAL_CROP_BOTTOM_PCT = 1.00
 
 
-def crop_capture_cedula_vehicular_bytes(image_bytes: bytes) -> bytes:
+def crop_capture_cedula_vehicular_bytes(
+    image_bytes: bytes,
+    return_metadata: bool = False,
+) -> bytes | tuple[bytes, dict]:
     """Recorta la captura de cédula vehicular antes de entregar la imagen al resto del flujo."""
     with Image.open(BytesIO(image_bytes)) as image:
         width, height = image.size
@@ -52,10 +55,26 @@ def crop_capture_cedula_vehicular_bytes(image_bytes: bytes) -> bytes:
             bottom = height
 
         cropped = image.crop((left, top, right, bottom))
+        cropped_width, cropped_height = cropped.size
 
     output = BytesIO()
     cropped.save(output, format='JPEG', quality=95)
-    return output.getvalue()
+    cropped_bytes = output.getvalue()
+
+    if return_metadata:
+        return cropped_bytes, {
+            'capture_crop_box_px': [left, top, right, bottom],
+            'capture_original_size_px': [width, height],
+            'capture_cropped_size_px': [cropped_width, cropped_height],
+            'capture_crop_box_pct': [
+                GENERAL_CROP_LEFT_PCT,
+                GENERAL_CROP_TOP_PCT,
+                GENERAL_CROP_RIGHT_PCT,
+                GENERAL_CROP_BOTTOM_PCT,
+            ],
+        }
+
+    return cropped_bytes
 
 
 def capture_camera250(
@@ -89,7 +108,10 @@ def capture_camera250(
 
         if response.status_code == 200 and len(response.content) > 1000:
             crop_started = time.perf_counter()
-            image_bytes = crop_capture_cedula_vehicular_bytes(response.content)
+            image_bytes, crop_meta = crop_capture_cedula_vehicular_bytes(
+                response.content,
+                return_metadata=True,
+            )
             crop_ms = int((time.perf_counter() - crop_started) * 1000)
 
             save_ms = 0
@@ -106,6 +128,7 @@ def capture_camera250(
                 'image_bytes': image_bytes,
                 'camera': 'Camara Cedula Entrada Vehicular',
                 'ip': ip,
+                **crop_meta,
                 'ocr_data': None,
                 'ocr_error': None,
                 'timings': {

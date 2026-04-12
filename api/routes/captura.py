@@ -59,19 +59,23 @@ async def capture_usuario_entrada_vehicular(
 async def capture_cedula_entrada_vehicular(
     include_data_url: bool = False,
     include_image: bool = True,
-    response_mode: str = "jpeg",
+    response_mode: str = "json",
     draw_boxes: bool = False,
+    do_ocr: bool = True,
+    include_ocr_crops: bool = False,
 ):
     """
-    Captura imagen de la cédula (sin OCR)
+    Captura imagen de la cédula vehicular y, en modo JSON, incluye OCR.
     - Captura desde Camera250 (cédula entrada vehicular)
-    - Retorna imagen en base64
+    - Retorna imagen en base64 (JSON) o binario JPEG (response_mode=jpeg)
     """
     return camera_service.capture_cedula_entrada_vehicular(
         include_data_url=include_data_url,
         include_image=include_image,
         response_mode=response_mode,
+        do_ocr=do_ocr,
         draw_boxes=draw_boxes,
+        include_ocr_crops=include_ocr_crops,
     )
 
 
@@ -183,7 +187,7 @@ async def extract_cedula_data_post(payload: CedulaOCRRequest):
 async def extract_cedula_data_live(
     include_data_url: bool = False,
     include_image: bool = True,
-    draw_boxes: bool = True,
+    draw_boxes: bool = False,
 ):
     """
     Captura cédula desde la cámara vehicular y ejecuta OCR en servidor.
