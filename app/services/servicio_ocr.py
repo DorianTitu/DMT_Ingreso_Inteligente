@@ -10,11 +10,12 @@ import time
 from fastapi import HTTPException
 from fastapi.responses import JSONResponse
 
-from camera_capture.camara_cedula_entrada_vehicular import (
+from camera_capture.camara_cedula_entrada_vehicular import crop_capture_cedula_vehicular_bytes
+from app.services.ocr_cedula_entrada_vehicular import (
     warmup_cedula_ocr_reader,
     extract_cedula_data_from_bytes,
 )
-from camera_capture.camara_cedula_entrada_peatonal import (
+from app.services.ocr_cedula_entrada_peatonal import (
     extract_cedula_data_from_bytes as extract_cedula_data_from_bytes_peatonal,
 )
 
@@ -71,6 +72,7 @@ class ServicioOCR:
         started = time.perf_counter()
 
         image_bytes = ServicioOCR._decode_base64_image(base64_data)
+        image_bytes = crop_capture_cedula_vehicular_bytes(image_bytes)
 
         ocr_data = extract_cedula_data_from_bytes(image_bytes)
         total_ms = int((time.perf_counter() - started) * 1000)

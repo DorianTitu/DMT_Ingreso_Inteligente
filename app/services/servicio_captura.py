@@ -17,6 +17,13 @@ from camera_capture import (
 )
 from camera_capture.camara_usuario_entrada_vehicular import capture_camera3 as capture_usuario_entrada_vehicular
 from camera_capture.camara_usuario_entrada_peatonal import capture_camera3 as capture_usuario_entrada_peatonal
+from app.services.ocr_cedula_entrada_vehicular import (
+    draw_ocr_boxes_on_bytes,
+    extract_cedula_data_from_bytes,
+)
+from app.services.ocr_cedula_entrada_peatonal import (
+    extract_cedula_data_from_bytes as extract_cedula_data_from_bytes_peatonal,
+)
 
 
 class ServicioCaptura:
@@ -184,7 +191,31 @@ class ServicioCaptura:
         draw_boxes: bool = False,
     ):
         """Captura imagen de cédula entrada vehicular (Camera250)"""
-        result = capture_camera250(self.output_dir, do_ocr=do_ocr, draw_boxes=draw_boxes)
+        # Igual que peatonal: prioriza bytes en memoria para minimizar I/O en disco.
+        result = capture_camera250(self.output_dir, save_file=False)
+
+        if result.get('success') and do_ocr:
+            ocr_error = None
+            try:
+                image_bytes = self._extract_image_bytes(result)
+                ocr_data = extract_cedula_data_from_bytes(image_bytes)
+                result['ocr_data'] = ocr_data
+                result['ocr_error'] = None
+
+                if draw_boxes:
+                    boxed_bytes, crop_boxes = draw_ocr_boxes_on_bytes(
+                        image_bytes,
+                        ocr_data.get('cedula_source') if isinstance(ocr_data, dict) else None,
+                    )
+                    if boxed_bytes:
+                        result['image_bytes'] = boxed_bytes
+                        result['crop_boxes'] = crop_boxes
+                        result['ocr_boxes_preview'] = crop_boxes
+            except Exception as exc:
+                ocr_error = str(exc)
+            if ocr_error:
+                result['ocr_error'] = ocr_error
+
         if response_mode.lower() == "jpeg":
             return self.build_capture_jpeg_response(result, "Error en captura")
         return self.build_capture_response(
@@ -209,8 +240,19 @@ class ServicioCaptura:
         result = capture_cedula_entrada_peatonal(
             self.output_dir,
             save_file=save_file,
-            do_ocr=do_ocr,
         )
+        if result.get('success') and do_ocr:
+            ocr_error = None
+            try:
+                image_bytes = self._extract_image_bytes(result)
+                ocr_data = extract_cedula_data_from_bytes_peatonal(image_bytes)
+                result['ocr_data'] = ocr_data
+                result['ocr_error'] = None
+            except Exception as exc:
+                ocr_error = str(exc)
+            if ocr_error:
+                result['ocr_error'] = ocr_error
+
         if response_mode.lower() == "jpeg":
             return self.build_capture_jpeg_response(
                 result,

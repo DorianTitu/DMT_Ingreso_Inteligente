@@ -24,7 +24,8 @@ async def root():
             "capture": {
                 "/capture/camara_placa_entrada_vehicular": "Capturar imagen de Camera1 (placa vehicular)",
                 "/capture/camara_usuario_entrada_vehicular": "Capturar imagen de Camera3 (usuario vehicular, 192.168.1.224)",
-                "/capture/camara_cedula_entrada_vehicular": "Capturar imagen de Camera250 (cédula vehicular, sin OCR)",
+                "/capture/camara_cedula_entrada_vehicular": "Capturar imagen de Camera250 (cédula vehicular, sin OCR, modo rapido JPEG por defecto)",
+                "/capture/camara_cedula_entrada_vehicular/jpeg": "Capturar imagen de cédula vehicular en JPEG directo (latencia minima)",
                 "/capture/camara_cedula_entrada_peatonal": "Capturar imagen de cámara cédula entrada peatonal (192.168.1.3, con OCR)",
                 "/capture/camara_usuario_entrada_peatonal": "Capturar imagen de usuario entrada peatonal (192.168.1.224, alias)"
             },

@@ -1,5 +1,5 @@
 """
-Captura de camara usuario entrada vehicular (192.168.1.224)
+Captura de camara usuario entrada peatonal (192.168.1.148)
 Protocolo: HTTP con autenticacion Digest
 """
 
@@ -15,9 +15,9 @@ SESSION = requests.Session()
 SESSION.headers.update({"Connection": "keep-alive"})
 SESSION.mount("http://", HTTPAdapter(pool_connections=10, pool_maxsize=10, max_retries=0))
 
-CAMERA_IP = "192.168.1.224"
+CAMERA_IP = "192.168.1.148"
 CAMERA_USER = "admin"
-CAMERA_PASSWORD = "dmt_2390"
+CAMERA_PASSWORD = "DMT_1990"
 SNAPSHOT_URL = f"http://{CAMERA_IP}/cgi-bin/snapshot.cgi"
 SNAPSHOT_AUTH = HTTPDigestAuth(CAMERA_USER, CAMERA_PASSWORD)
 SNAPSHOT_TIMEOUT = (1.5, 4.0)

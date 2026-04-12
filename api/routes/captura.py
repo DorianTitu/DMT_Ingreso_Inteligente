@@ -59,7 +59,7 @@ async def capture_usuario_entrada_vehicular(
 async def capture_cedula_entrada_vehicular(
     include_data_url: bool = False,
     include_image: bool = True,
-    response_mode: str = "json",
+    response_mode: str = "jpeg",
     draw_boxes: bool = False,
 ):
     """
@@ -72,6 +72,19 @@ async def capture_cedula_entrada_vehicular(
         include_image=include_image,
         response_mode=response_mode,
         draw_boxes=draw_boxes,
+    )
+
+
+@router.get("/capture/camara_cedula_entrada_vehicular/jpeg")
+async def capture_cedula_entrada_vehicular_jpeg():
+    """
+    Captura la imagen vehicular de cédula y la devuelve en JPEG directo.
+    - Más rápido que JSON/base64 cuando el front solo necesita la imagen.
+    """
+    return camera_service.capture_cedula_entrada_vehicular(
+        include_data_url=False,
+        include_image=False,
+        response_mode="jpeg",
     )
 
 
