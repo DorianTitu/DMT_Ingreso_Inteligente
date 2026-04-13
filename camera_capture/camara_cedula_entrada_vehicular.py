@@ -550,7 +550,7 @@ def capture_camera250(
         dict con estado de la captura {'success': bool, 'file': str, 'size': int}
     """
     # Configuración
-    ip = "192.168.1.250"
+    ip = "192.168.1.148"
     user = "admin"
     password = "DMT_1990"
     rtsp_url = (

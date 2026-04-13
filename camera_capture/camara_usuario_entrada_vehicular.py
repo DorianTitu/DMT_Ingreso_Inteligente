@@ -54,7 +54,7 @@ def capture_camera3(output_dir: str = "snapshots_camaras", save_file: bool = Tru
     Returns:
         dict con estado de la captura {'success': bool, 'file': str, 'size': int}
     """
-    ip = "192.168.1.223"
+    ip = "192.168.1.224"
     user = "admin"
     password = "DMT_1990"
     url = f"http://{ip}/cgi-bin/snapshot.cgi"
