@@ -67,11 +67,12 @@ async def capture_cedula_entrada_vehicular(
     - Captura desde Camera250 (cédula entrada vehicular)
     - Retorna imagen en base64
     """
-    # Intercambio solicitado: este endpoint usa la captura de usuario peatonal.
-    return camera_service.capture_usuario_entrada_peatonal(
+    return camera_service.capture_cedula_entrada_vehicular(
         include_data_url=include_data_url,
         include_image=include_image,
         response_mode=response_mode,
+        do_ocr=False,
+        draw_boxes=draw_boxes,
     )
 
 
@@ -113,13 +114,10 @@ async def capture_usuario_entrada_peatonal(
     Captura imagen de usuario entrada peatonal (192.168.1.224)
     Protocolo: HTTP Digest
     """
-    # Intercambio solicitado: este endpoint usa la captura de cédula vehicular.
-    return camera_service.capture_cedula_entrada_vehicular(
+    return camera_service.capture_usuario_entrada_peatonal(
         include_data_url=include_data_url,
         include_image=include_image,
         response_mode=response_mode,
-        do_ocr=False,
-        draw_boxes=False,
     )
 
 

@@ -10,17 +10,21 @@ import time
 from fastapi import HTTPException
 from fastapi.responses import JSONResponse
 
-from camera_capture.camara_cedula_entrada_vehicular import (
-    warmup_cedula_ocr_reader,
-    extract_cedula_data_from_bytes,
-)
-from camera_capture.camara_cedula_entrada_peatonal import (
-    extract_cedula_data_from_bytes as extract_cedula_data_from_bytes_peatonal,
+from app.services.ocr_cedulas import (
+    get_peatonal_ocr,
+    get_vehicular_ocr,
 )
 
 
 class ServicioOCR:
     """Servicio de prec I aeso OCR de cédulas"""
+
+    _vehicular_ocr = get_vehicular_ocr()
+    _peatonal_ocr = get_peatonal_ocr()
+
+    def __init__(self):
+        self.vehicular_ocr = self._vehicular_ocr
+        self.peatonal_ocr = self._peatonal_ocr
 
     @staticmethod
     def _decode_base64_image(base64_data: str) -> bytes:
@@ -58,7 +62,7 @@ class ServicioOCR:
     def warmup_ocr():
         """Precarga el modelo OCR para mejor rendimiento"""
         try:
-            warmup_cedula_ocr_reader()
+            ServicioOCR._vehicular_ocr.warmup()
             print("[OCR] EasyOCR precargado correctamente")
             return True
         except Exception as exc:
@@ -72,7 +76,7 @@ class ServicioOCR:
 
         image_bytes = ServicioOCR._decode_base64_image(base64_data)
 
-        ocr_data = extract_cedula_data_from_bytes(image_bytes)
+        ocr_data = ServicioOCR._vehicular_ocr.analyze(image_bytes)
         total_ms = int((time.perf_counter() - started) * 1000)
         
         return JSONResponse(
@@ -94,7 +98,7 @@ class ServicioOCR:
 
         image_bytes = ServicioOCR._decode_base64_image(base64_data)
 
-        ocr_data = extract_cedula_data_from_bytes_peatonal(image_bytes)
+        ocr_data = ServicioOCR._peatonal_ocr.analyze(image_bytes)
         total_ms = int((time.perf_counter() - started) * 1000)
 
         return JSONResponse(
