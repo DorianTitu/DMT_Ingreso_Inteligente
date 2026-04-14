@@ -63,12 +63,14 @@ NOISE_NAME_PREFIXES = (
     'VENCIMI',
 )
 
-# Recortes vehicular
-VEHICULAR_CROP_ZONE_1_PCT = (0.33, 0.33, 0.98, 0.01)
-VEHICULAR_CROP_ZONE_2_PCT = (0.20, 1.00, 0.42, 0.80)
+# Recortes vehicular (4 zonas propias, distintas a peatonal)
+VEHICULAR_CROP_ZONE_1_PCT = (0.10, 0.80, 0.45, 1.00)
+VEHICULAR_CROP_ZONE_2_PCT = (0.35, 0.35, 0.60, 0.70)
+VEHICULAR_CROP_ZONE_3_PCT = (0.70, 0.30, 0.98, 0.49)
+VEHICULAR_CROP_ZONE_4_PCT = (0.30, 0.20, 0.66, 0.60)
 
 # Recortes peatonal
-PEATONAL_CROP_ZONE_1_PCT = (0.12, 0.80, 0.40, 0.98)
+PEATONAL_CROP_ZONE_1_PCT = (0.10, 0.80, 0.40, 0.98)
 PEATONAL_CROP_ZONE_2_PCT = (0.38, 0.31, 0.70, 0.59)
 PEATONAL_CROP_ZONE_3_PCT = (0.71, 0.24, 0.99, 0.50)
 PEATONAL_CROP_ZONE_4_PCT = (0.37, 0.13, 0.65, 0.48)
@@ -683,6 +685,31 @@ def extract_cedula_peatonal_from_bytes(image_bytes: bytes) -> dict:
     }
 
 
+def extract_cedula_vehicular_4zones_from_bytes(image_bytes: bytes) -> dict:
+    """Ejecuta la misma logica OCR de 4 recortes usando zonas vehiculares propias."""
+    global PEATONAL_CROP_ZONE_1_PCT, PEATONAL_CROP_ZONE_2_PCT, PEATONAL_CROP_ZONE_3_PCT, PEATONAL_CROP_ZONE_4_PCT
+
+    original_zones = (
+        PEATONAL_CROP_ZONE_1_PCT,
+        PEATONAL_CROP_ZONE_2_PCT,
+        PEATONAL_CROP_ZONE_3_PCT,
+        PEATONAL_CROP_ZONE_4_PCT,
+    )
+    try:
+        PEATONAL_CROP_ZONE_1_PCT = VEHICULAR_CROP_ZONE_1_PCT
+        PEATONAL_CROP_ZONE_2_PCT = VEHICULAR_CROP_ZONE_2_PCT
+        PEATONAL_CROP_ZONE_3_PCT = VEHICULAR_CROP_ZONE_3_PCT
+        PEATONAL_CROP_ZONE_4_PCT = VEHICULAR_CROP_ZONE_4_PCT
+        return extract_cedula_peatonal_from_bytes(image_bytes)
+    finally:
+        (
+            PEATONAL_CROP_ZONE_1_PCT,
+            PEATONAL_CROP_ZONE_2_PCT,
+            PEATONAL_CROP_ZONE_3_PCT,
+            PEATONAL_CROP_ZONE_4_PCT,
+        ) = original_zones
+
+
 def draw_peatonal_crop_boxes(
     image_bytes: bytes,
     route: str | None = None,
@@ -728,6 +755,34 @@ def draw_peatonal_crop_boxes(
         return None, None
 
 
+def draw_vehicular_4zones_crop_boxes(
+    image_bytes: bytes,
+    route: str | None = None,
+) -> tuple[bytes, dict] | tuple[None, None]:
+    """Dibuja cajas de los 4 recortes vehiculares propios."""
+    global PEATONAL_CROP_ZONE_1_PCT, PEATONAL_CROP_ZONE_2_PCT, PEATONAL_CROP_ZONE_3_PCT, PEATONAL_CROP_ZONE_4_PCT
+
+    original_zones = (
+        PEATONAL_CROP_ZONE_1_PCT,
+        PEATONAL_CROP_ZONE_2_PCT,
+        PEATONAL_CROP_ZONE_3_PCT,
+        PEATONAL_CROP_ZONE_4_PCT,
+    )
+    try:
+        PEATONAL_CROP_ZONE_1_PCT = VEHICULAR_CROP_ZONE_1_PCT
+        PEATONAL_CROP_ZONE_2_PCT = VEHICULAR_CROP_ZONE_2_PCT
+        PEATONAL_CROP_ZONE_3_PCT = VEHICULAR_CROP_ZONE_3_PCT
+        PEATONAL_CROP_ZONE_4_PCT = VEHICULAR_CROP_ZONE_4_PCT
+        return draw_peatonal_crop_boxes(image_bytes, route)
+    finally:
+        (
+            PEATONAL_CROP_ZONE_1_PCT,
+            PEATONAL_CROP_ZONE_2_PCT,
+            PEATONAL_CROP_ZONE_3_PCT,
+            PEATONAL_CROP_ZONE_4_PCT,
+        ) = original_zones
+
+
 class GenericCedulaOCR(ABC):
     """Contrato base para analizadores OCR de cédula."""
 
@@ -750,15 +805,15 @@ class CedulaVehicularOCR(GenericCedulaOCR):
     """Implementación OCR para cédula vehicular."""
 
     def analyze(self, image_bytes: bytes) -> dict:
-        return extract_cedula_vehicular_from_bytes(image_bytes)
+        return extract_cedula_vehicular_4zones_from_bytes(image_bytes)
 
     def draw_boxes(
         self,
         image_bytes: bytes,
         analysis: dict | None = None,
     ) -> tuple[bytes | None, dict | None]:
-        cedula_source = analysis.get('cedula_source') if isinstance(analysis, dict) else None
-        boxed, meta = draw_vehicular_crop_boxes(image_bytes, cedula_source)
+        route = analysis.get('flow_route') if isinstance(analysis, dict) else None
+        boxed, meta = draw_vehicular_4zones_crop_boxes(image_bytes, route)
         return boxed, meta
 
 
