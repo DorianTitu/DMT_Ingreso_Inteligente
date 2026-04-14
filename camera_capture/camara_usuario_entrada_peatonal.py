@@ -14,7 +14,7 @@ from .runtime_helpers import format_ffmpeg_error, get_ffmpeg_path
 
 MIN_VALID_IMAGE_BYTES = 9000
 CAPTURE_TRANSPORT_ORDER = ('udp', 'tcp')
-CAMERA_IP = '192.168.1.4'
+CAMERA_IP = '192.168.1.148'
 CAMERA_USER = 'admin'
 CAMERA_PASSWORD = 'DMT_1990'
 CAMERA_CHANNEL = 1
