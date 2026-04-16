@@ -6,6 +6,7 @@ Integración de servicios, repositorios y rutas
 import os
 import sys
 import shutil
+import logging
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -30,6 +31,9 @@ from api import routes as routes_module
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import registro_vehicular
 import registro_peatonal
+
+
+logger = logging.getLogger(__name__)
 
 
 # ============ CREAR APLICACIÓN FASTAPI ============
@@ -64,10 +68,8 @@ peatonal_service: ServicioPeatonal = None
 async def startup_event():
     """Inicialización de servicios y managers"""
     global camera_service, ocr_service, vehicular_service, peatonal_service
-    
-    print("=" * 60)
-    print("INICIANDO API DE CAPTURA DE CAMARAS")
-    print("=" * 60)
+
+    logger.info("Iniciando API de captura de camaras")
     
     # Crear directorios
     os.makedirs(OUTPUT_DIR, exist_ok=True)
@@ -86,14 +88,17 @@ async def startup_event():
             except OSError:
                 # Continua aunque algun archivo este bloqueado por otro proceso.
                 continue
-        print(f"[CACHE] Limpieza de capturas temporales: {removed_count} elementos removidos")
+        logger.info(
+            "Limpieza de capturas temporales completada: %s elementos removidos",
+            removed_count,
+        )
     
     # ============ INICIALIZAR MANAGERS DE REGISTRO ============
     
-    print(f"📁 Ruta de registros vehiculares: {REGISTRO_VEHICULAR_PATH}")
+    logger.info("Ruta de registros vehiculares: %s", REGISTRO_VEHICULAR_PATH)
     registro_vehicular.inicializar_registro_manager(REGISTRO_VEHICULAR_PATH)
-    
-    print(f"📁 Ruta de registros peatonales: {REGISTRO_PEATONAL_PATH}")
+
+    logger.info("Ruta de registros peatonales: %s", REGISTRO_PEATONAL_PATH)
     registro_peatonal.inicializar_registro_manager(REGISTRO_PEATONAL_PATH)
     
     # ============ INICIALIZAR SERVICIOS ============
@@ -117,11 +122,9 @@ async def startup_event():
     routes_module.vehicular.set_service(vehicular_service)
     routes_module.peatonal.set_service(peatonal_service)
     
-    print("\n✅ Todos los servicios inicializados correctamente")
-    print("=" * 60)
-    print(f"Acceder a: http://localhost:8000")
-    print(f"Documentacion: http://localhost:8000/docs")
-    print("=" * 60 + "\n")
+    logger.info("Todos los servicios inicializados correctamente")
+    logger.info("Acceso API: http://localhost:8000")
+    logger.info("Documentacion API: http://localhost:8000/docs")
 
 
 # ============ REGISTRAR RUTAS ============

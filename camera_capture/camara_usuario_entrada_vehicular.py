@@ -1,147 +1,188 @@
-"""
-Captura de camara usuario entrada vehicular (192.168.1.223)
-Protocolo: HTTP Digest con fallback RTSP
-"""
+#!/usr/bin/env python3
+"""Captura un snapshot RTSP de la camara de ingreso peatonal."""
 
+from __future__ import annotations
+
+import logging
 import os
+import subprocess
+import time
 from datetime import datetime
+from pathlib import Path
 
-import cv2
-import requests
-from requests.auth import HTTPDigestAuth
+try:
+    from .runtime_helpers import format_ffmpeg_error, get_ffmpeg_path
+except ImportError:  # Soporta ejecucion directa del script
+    from runtime_helpers import format_ffmpeg_error, get_ffmpeg_path
 
-SESSION = requests.Session()
-SESSION.headers.update({"Connection": "keep-alive"})
+# ========== CONFIGURACION ==========
+DVR_IP = "192.168.1.148"
+DVR_USUARIO = "admin"
+DVR_CONTRASENA = "DMT_1990"
+DVR_PUERTO_RTSP = 554
+CANAL = 2  # Canal 2 = Usuario vehicular
+CAPTURE_TIMEOUT_SECONDS = 20
+
+BASE_DIR = Path(__file__).resolve().parents[1]
+OUTPUT_DIR = Path(os.getenv("SNAPSHOT_OUTPUT_DIR", BASE_DIR / "snapshots_camaras"))
+
+LOGGER = logging.getLogger("camera_capture.cedula_entrada_peatonal")
 
 
-def _capture_from_rtsp(ip: str, user: str, password: str):
-    """Obtiene un frame por RTSP usando rutas comunes de Dahua."""
-    rtsp_urls = [
-        f"rtsp://{user}:{password}@{ip}:554/cam/realmonitor?channel=1&subtype=0",
-        f"rtsp://{user}:{password}@{ip}:554/cam/realmonitor?channel=1&subtype=1",
-        f"rtsp://{user}:{password}@{ip}:554/live/ch00_0",
-        f"rtsp://{user}:{password}@{ip}:554/live/ch01_0",
-        f"rtsp://{user}:{password}@{ip}:554/Streaming/Channels/101",
+def configure_logging() -> None:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
+    )
+
+
+def build_rtsp_url() -> str:
+    return (
+        f"rtsp://{DVR_USUARIO}:{DVR_CONTRASENA}@{DVR_IP}:{DVR_PUERTO_RTSP}"
+        f"/cam/realmonitor?channel={CANAL}&subtype=0"
+    )
+
+
+def _capture_snapshot(output_dir: Path) -> tuple[Path, int]:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    output_file = output_dir / f"camara_cedula_entrada_peatonal_{timestamp}.jpg"
+    rtsp_url = build_rtsp_url()
+
+    cmd = [
+        get_ffmpeg_path(),
+        "-rtsp_transport",
+        "tcp",
+        "-i",
+        rtsp_url,
+        "-vframes",
+        "1",
+        "-q:v",
+        "5",
+        "-y",
+        str(output_file),
     ]
 
-    for url in rtsp_urls:
-        cap = cv2.VideoCapture(url)
-        try:
-            if not cap.isOpened():
-                continue
+    LOGGER.info("Iniciando captura RTSP")
+    capture_started = time.perf_counter()
+    result = subprocess.run(
+        cmd,
+        capture_output=True,
+        timeout=CAPTURE_TIMEOUT_SECONDS,
+        text=True,
+        check=False,
+    )
 
-            ok, frame = cap.read()
-            if not ok or frame is None or frame.size == 0:
-                continue
+    if result.returncode != 0:
+        raise RuntimeError(format_ffmpeg_error(result.returncode, result.stderr))
 
-            encode_ok, encoded = cv2.imencode('.jpg', frame)
-            if not encode_ok:
-                continue
+    if not output_file.exists():
+        raise RuntimeError("ffmpeg termino sin generar el archivo de salida")
 
-            return encoded.tobytes(), url
-        finally:
-            cap.release()
+    capture_ms = int((time.perf_counter() - capture_started) * 1000)
+    return output_file, capture_ms
 
-    return None, None
+
+def capture_cedula_entrada_peatonal(
+    output_dir: str = "snapshots_camaras",
+    save_file: bool = True,
+) -> dict:
+    """Captura imagen de cédula entrada peatonal y retorna metadata estandar."""
+    output_path = Path(output_dir)
+
+    try:
+        output_file, capture_ms = _capture_snapshot(output_path)
+        image_bytes = output_file.read_bytes()
+
+        if not save_file:
+            try:
+                output_file.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+        return {
+            "success": True,
+            "file": str(output_file) if save_file else None,
+            "size": len(image_bytes),
+            "image_bytes": image_bytes,
+            "camera": "Camara Cedula Entrada Peatonal",
+            "ip": DVR_IP,
+            "timings": {
+                "capture_ms": capture_ms,
+                "capture_method": "rtsp_tcp",
+            },
+        }
+    except subprocess.TimeoutExpired:
+        return {
+            "success": False,
+            "file": None,
+            "size": None,
+            "camera": "Camara Cedula Entrada Peatonal",
+            "ip": DVR_IP,
+            "error": "Timeout",
+        }
+    except FileNotFoundError:
+        return {
+            "success": False,
+            "file": None,
+            "size": None,
+            "camera": "Camara Cedula Entrada Peatonal",
+            "ip": DVR_IP,
+            "error": "ffmpeg no encontrado en PATH",
+        }
+    except Exception as exc:
+        return {
+            "success": False,
+            "file": None,
+            "size": None,
+            "camera": "Camara Cedula Entrada Peatonal",
+            "ip": DVR_IP,
+            "error": str(exc),
+        }
+
 
 def capture_camera3(output_dir: str = "snapshots_camaras", save_file: bool = True) -> dict:
-    """
-    Captura foto de Camera3 (usuario entrada vehicular)
-    
-    Args:
-        output_dir: Directorio donde guardar la foto
-    
-    Returns:
-        dict con estado de la captura {'success': bool, 'file': str, 'size': int}
-    """
-    ip = "192.168.1.224"
-    user = "admin"
-    password = "DMT_1990"
-    url = f"http://{ip}/cgi-bin/snapshot.cgi"
-    
-    output_file = None
-    if save_file:
-        os.makedirs(output_dir, exist_ok=True)
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        output_file = os.path.join(output_dir, f"camara_usuario_entrada_vehicular_{timestamp}.jpg")
+    """Compatibilidad con el contrato usado por servicios/rutas para usuario vehicular."""
+    result = capture_cedula_entrada_peatonal(output_dir=output_dir, save_file=save_file)
+    if isinstance(result, dict):
+        result["camera"] = "Camera3 (Usuario)"
+    return result
+
+
+def main() -> int:
+    configure_logging()
+
+    LOGGER.info("Configuracion de captura cargada")
+    LOGGER.info(
+        "DVR=%s:%s canal=%s usuario=%s output_dir=%s",
+        DVR_IP,
+        DVR_PUERTO_RTSP,
+        CANAL,
+        DVR_USUARIO,
+        OUTPUT_DIR,
+    )
+
     try:
-        response = SESSION.get(
-            url,
-            auth=HTTPDigestAuth(user, password),
-            timeout=(2, 6),
-            stream=False,
+        output_file, capture_ms = _capture_snapshot(OUTPUT_DIR)
+        size = output_file.stat().st_size
+        LOGGER.info("Captura completada correctamente")
+        LOGGER.info("Archivo generado: %s", output_file)
+        LOGGER.info("Tamano: %s bytes (%.1f KB)", size, size / 1024)
+        LOGGER.info("Tiempo de captura: %s ms", capture_ms)
+        return 0
+    except subprocess.TimeoutExpired:
+        LOGGER.exception(
+            "Timeout de captura: ffmpeg supero %s segundos",
+            CAPTURE_TIMEOUT_SECONDS,
         )
+        return 1
+    except FileNotFoundError:
+        LOGGER.exception("No se encontro ffmpeg en el PATH")
+        return 1
+    except Exception:
+        LOGGER.exception("Fallo inesperado durante la captura")
+        return 1
 
-        if response.status_code == 200 and len(response.content) > 1000:
-            image_bytes = response.content
-            if output_file:
-                with open(output_file, 'wb') as f:
-                    f.write(image_bytes)
 
-            file_size = len(image_bytes)
-            return {
-                'success': True,
-                'file': output_file,
-                'size': file_size,
-                'image_bytes': image_bytes,
-                'capture_method': 'http_snapshot',
-                'camera': 'Camara Usuario Entrada Vehicular',
-                'ip': ip
-            }
-
-        # Fallback RTSP cuando snapshot HTTP no esta disponible (ej. 404)
-        image_bytes, rtsp_url = _capture_from_rtsp(ip, user, password)
-        if image_bytes and len(image_bytes) > 1000:
-            if output_file:
-                with open(output_file, 'wb') as f:
-                    f.write(image_bytes)
-
-            file_size = len(image_bytes)
-            return {
-                'success': True,
-                'file': output_file,
-                'size': file_size,
-                'image_bytes': image_bytes,
-                'capture_method': 'rtsp_frame',
-                'rtsp_url': rtsp_url,
-                'camera': 'Camara Usuario Entrada Vehicular',
-                'ip': ip
-            }
-
-        return {
-            'success': False,
-            'file': None,
-            'size': None,
-            'camera': 'Camara Usuario Entrada Vehicular',
-            'ip': ip,
-            'error': f'HTTP code: {response.status_code}'
-        }
-    except requests.ConnectTimeout:
-        return {
-            'success': False,
-            'file': None,
-            'size': None,
-            'camera': 'Camara Usuario Entrada Vehicular',
-            'ip': ip,
-            'error': 'Connection timeout - Camera unreachable'
-        }
-    except requests.Timeout:
-        return {
-            'success': False,
-            'file': None,
-            'size': None,
-            'camera': 'Camara Usuario Entrada Vehicular',
-            'ip': ip,
-            'error': 'Timeout'
-        }
-    except Exception as e:
-        if output_file and os.path.exists(output_file):
-            os.remove(output_file)
-        return {
-            'success': False,
-            'file': None,
-            'size': None,
-            'camera': 'Camara Usuario Entrada Vehicular',
-            'ip': ip,
-            'error': str(e)
-        }
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -180,7 +180,7 @@ class ServicioCaptura:
         draw_boxes: bool = False,
     ):
         """Captura imagen de cédula entrada vehicular (Camera250)"""
-        result = capture_camera250(self.output_dir)
+        result = capture_camera250(self.output_dir, save_file=False)
 
         if result.get('success') and (do_ocr or draw_boxes):
             image_bytes = self._extract_image_bytes(result)
